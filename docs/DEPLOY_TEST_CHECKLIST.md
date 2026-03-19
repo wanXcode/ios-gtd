@@ -141,7 +141,7 @@
 
 ## 五、当前已知边界
 
-- Apple sync 仍是占位接口，不代表已完成真实双向同步
+- Apple sync 的 backend 合同（pull / push / ack / state）已经在线可测，但真实 Apple Reminders bridge 仍在联调阶段，尚不代表端到端双向同步已经完全收口
 - 目前无鉴权，请勿当成正式公开生产服务使用
 - 当前是单用户/单实例测试态
 - 数据库目前为 SQLite 部署形态，适合当前测试，不是最终形态

@@ -176,16 +176,16 @@ assistant capture 合同补充：
 - sync / assistant 主接口：线上与本地 smoke 一致
 
 ### 当前不一致 / 易误导的部分
-1. **`docs/QA_SYNC_REPORT.md` 的旧结论已经过时**
-   - 里面仍写线上是旧占位版；
-   - 这不再符合当前事实。
+1. **旧版 QA 认知已经过时**
+   - 早前“线上还是旧占位版”的判断已不成立；
+   - 当前线上 `gtd.5666.net` 已具备 assistant views 与 sync pull/push/ack/state 能力面。
 
-2. **`docs/DEPLOY_TEST_CHECKLIST.md` 仍偏旧**
-   - 依然把 sync 描述得偏“占位/待接线”；
-   - 需要更新为当前合同与当前部署检查项。
+2. **`docs/DEPLOY_TEST_CHECKLIST.md` 需要按当前合同表述**
+   - 不应再把 sync 写成“占位/待接线”；
+   - 更准确的说法是：backend 合同与诊断面已在线，bridge 端到端联调仍在继续。
 
-3. **assistant capture 请求样例需要更明确写 `input`**
-   - 否则 smoke 很容易误发成 `text`。
+3. **assistant capture 请求样例需要明确写 `input`**
+   - 否则 smoke 很容易误发成 `text` 并得到 422。
 
 ---
 
@@ -210,8 +210,8 @@ assistant capture 合同补充：
 ## 建议
 
 ### P0
-1. **更新/替换旧 QA 报告认知**
-   - 不要再把线上 `gtd.5666.net` 视为旧占位版。
+1. **统一团队认知：线上不是旧占位版**
+   - 后续联调、部署、排障都应以当前合同为准，不再沿用旧结论。
 
 2. **更新 deploy / smoke 文档**
    - 明确当前线上 smoke 该检查：
@@ -250,4 +250,4 @@ assistant capture 合同补充：
 - sync pull/push/ack/state：**通过**
 
 ### 综合
-**本轮 QA 的关键结论是：线上/仓库能力面已经基本对齐，当前更大的风险在“测试体系是否可靠”和“旧文档/旧 QA 结论是否还在误导人”。**
+**本轮 QA 的关键结论是：线上/仓库能力面已经基本对齐，当前更大的风险在“测试体系是否可靠”和“文档/联调认知是否仍沿用过时结论”。**

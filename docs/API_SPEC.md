@@ -1248,6 +1248,7 @@ MVP 建议先采用保守策略：
 ### 当前已实现范围
 
 - 已提供最小可用路由：`POST /api/assistant/capture`
+- 请求体字段名是 `input`，不是 `text`；若误传 `{"text": ...}`，当前会返回 422
 - 支持 `dry_run=true`：只返回解析结果，不落库
 - 支持最小上下文：`timezone`、`source`、`source_ref`、`actor`
 - 当前解析策略为启发式规则，不依赖 LLM：

@@ -204,6 +204,14 @@ def test_empty_ack_does_not_clear_previous_bridge_error_snapshot(
     assert failed_ack.status_code == 200
     assert failed_ack.json()["checkpoint"]["last_error_code"] == "timeout"
 
+    heartbeat_push = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-error-snapshot", "cursor": str(item["change_id"] - 1), "limit": 10, "tasks": []},
+    )
+    assert heartbeat_push.status_code == 200
+    assert heartbeat_push.json()["checkpoint"]["last_error_code"] == "timeout"
+    assert heartbeat_push.json()["checkpoint"]["last_error_message"] == "bridge timeout"
+
     empty_ack = client.post(
         "/api/sync/apple/ack",
         json={"bridge_id": "bridge-error-snapshot", "acks": []},

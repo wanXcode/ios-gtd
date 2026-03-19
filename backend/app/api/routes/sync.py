@@ -472,8 +472,6 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
     state.last_push_cursor = next_cursor
     state.last_push_succeeded_at = _now()
     state.last_seen_change_id = max_seen_change_id or state.last_seen_change_id
-    state.last_error_code = None
-    state.last_error_message = None
     db.add(state)
     db.add(run)
     db.commit()
