@@ -2,53 +2,28 @@
 
 一个以 GTD 主库为核心、以 Apple Reminders 为原生入口之一、以 AI 对话为整理入口的个人任务系统。
 
-当前仓库已经有第一阶段的后端 MVP 骨架，同时补齐了接口设计与路线图文档，方便继续直接开发。
+这版仓库已经从“后端骨架”推进到“可部署测试版”附近：后端可迁移、可启动、可测试，tasks 主链路更完整，也补上了最小可用的 Apple sync API 骨架，适合开始部署测试。
 
-## 项目概览
+## 当前状态
 
-目标不是再做一个普通 todo app，而是先跑通这条链路：
+后端已具备：
 
-- 后端维护统一任务主库
-- Apple Reminders 继续作为日常原生入口
-- AI 可以直接查询、整理、批量修改任务
-- 后端与 Apple Reminders 最终实现双向同步
+- FastAPI + SQLAlchemy + Alembic 基础工程
+- SQLite 本地开发可用，PostgreSQL 可作为部署目标
+- tasks / projects / tags 可运行 API
+- tasks 增强：
+  - `POST /api/tasks/{id}/reopen`
+  - `POST /api/tasks/batch-update`
+  - 软删除优先
+  - `operation_logs` 已接入关键任务变更流程
+- Apple sync 最小骨架：
+  - `POST /api/sync/apple/pull`
+  - `POST /api/sync/apple/push`
+  - `POST /api/sync/apple/ack`
+- 本地测试与 smoke test
+- Dockerfile + `docker-compose.dev.yml`
 
-当前技术路线保持与 `docs/PRD.md`、`docs/TECH_SPEC.md` 一致：
-
-- Backend：FastAPI + SQLAlchemy + Alembic
-- DB：开发环境 SQLite，生产建议 PostgreSQL
-- Sync Bridge：后续采用 macOS + Swift + EventKit
-- AI Layer：通过后端 API 承接自然语言任务操作
-
-## 当前仓库状态
-
-已落地：
-
-- `backend/` FastAPI 项目结构
-- 配置管理（`pydantic-settings`）
-- SQLAlchemy 2.x 模型
-- Alembic 初始迁移
-- SQLite 开发兼容，PostgreSQL 作为生产默认取向
-- 基础 API：
-  - `GET /api/health`
-  - `GET/POST /api/projects`
-  - `GET/POST /api/tags`
-  - `GET/POST /api/tasks`
-  - `GET/PATCH/DELETE /api/tasks/{id}`
-  - `POST /api/tasks/{id}/complete`
-- 最小测试样例
-
-已补齐文档：
-
-- `docs/API_SPEC.md`：接口规范，覆盖 tasks / projects / tags / sync / assistant
-- `docs/ROADMAP.md`：MVP 里程碑、优先级、阶段任务、风险
-
-注意：
-
-- 当前代码实现的接口能力，以 Swagger 与 `backend/app/api/routes/` 为准
-- `docs/API_SPEC.md` 中已明确区分“已实现”和“规划中”接口，便于继续增量开发
-
-## 目录
+## 仓库结构
 
 ```text
 ios-gtd/
@@ -56,28 +31,17 @@ ios-gtd/
     app/
     alembic/
     tests/
+    Dockerfile
   docs/
     PRD.md
     TECH_SPEC.md
     API_SPEC.md
     ROADMAP.md
+  mac-sync-bridge/
+  docker-compose.dev.yml
 ```
 
-## 文档导航
-
-- 产品目标与边界：`docs/PRD.md`
-- 架构、模型与技术路线：`docs/TECH_SPEC.md`
-- 接口设计与请求/响应约定：`docs/API_SPEC.md`
-- 开发路线图与优先级：`docs/ROADMAP.md`
-
-如果准备继续写代码，建议阅读顺序：
-
-1. `docs/PRD.md`
-2. `docs/TECH_SPEC.md`
-3. `docs/API_SPEC.md`
-4. `docs/ROADMAP.md`
-
-## 本地启动
+## 快速本地启动
 
 ```bash
 cd backend
@@ -86,7 +50,7 @@ source .venv/bin/activate
 pip install -e .[dev]
 cp .env.example .env
 alembic upgrade head
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 访问：
@@ -94,28 +58,77 @@ uvicorn app.main:app --reload
 - Swagger UI: http://127.0.0.1:8000/docs
 - Health: http://127.0.0.1:8000/api/health
 
-## 数据库策略
+## 用 Docker 跑开发版
 
-开发环境默认使用 SQLite：
+仓库根目录执行：
+
+```bash
+docker compose -f docker-compose.dev.yml up --build
+```
+
+## 环境变量
+
+`backend/.env.example`：
 
 ```env
+APP_NAME=ios-gtd-backend
+APP_ENV=local
+APP_HOST=127.0.0.1
+APP_PORT=8000
 DATABASE_URL=sqlite:///./gtd.db
 ```
 
-生产建议切换 PostgreSQL：
+生产建议使用 PostgreSQL：
 
 ```env
 DATABASE_URL=postgresql+psycopg://user:password@host:5432/ios_gtd
 ```
 
-## 推荐下一步
+## 迁移与测试
 
-按当前文档设计，建议优先继续做：
+迁移：
 
-1. `POST /tasks/{id}/reopen`
-2. `POST /tasks/batch-update`
-3. `operation_logs` 自动写入
-4. Apple sync 的 run / pull / push / ack 主链路
-5. assistant 的 capture / today / inbox-organize
+```bash
+cd backend
+alembic upgrade head
+```
 
-这几项补完后，项目会从“有骨架”进入“可跑 GTD 闭环”的阶段。
+测试：
+
+```bash
+cd backend
+pytest
+```
+
+## 部署测试建议
+
+如果是第一次把它部署到测试环境，建议按这个顺序：
+
+1. 准备 Python 3.11+ 或 Docker 环境
+2. 配置 `DATABASE_URL`（测试期可先 SQLite，建议尽快切 PostgreSQL）
+3. 执行 `alembic upgrade head`
+4. 启动 `uvicorn app.main:app`
+5. 先验证：
+   - `GET /api/health`
+   - 创建 task
+   - complete / reopen / delete
+   - `POST /api/tasks/batch-update`
+   - `POST /api/sync/apple/pull|push|ack`
+
+## 已知缺口
+
+当前已经适合“部署测试”，但还不是完整生产版：
+
+- Apple sync 还是契约/占位实现，不是完整双向同步
+- 没有鉴权、多用户隔离、权限控制
+- 没有真正的后台任务/队列处理
+- 没有更细的观测、日志查询接口、运维脚本
+- 删除目前采用软删除优先；真正的数据清理策略后续还要再定
+
+## 文档导航
+
+- 产品目标与边界：`docs/PRD.md`
+- 架构、模型与技术路线：`docs/TECH_SPEC.md`
+- 接口设计与请求/响应约定：`docs/API_SPEC.md`
+- 开发路线图与优先级：`docs/ROADMAP.md`
+- 后端部署与运行：`backend/README.md`

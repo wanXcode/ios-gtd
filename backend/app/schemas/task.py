@@ -41,6 +41,15 @@ class TaskUpdate(BaseModel):
     last_modified_by: str | None = None
 
 
+class TaskBatchUpdateItem(BaseModel):
+    id: UUID
+    patch: TaskUpdate
+
+
+class TaskBatchUpdateRequest(BaseModel):
+    updates: list[TaskBatchUpdateItem] = Field(min_length=1)
+
+
 class TaskRead(ORMModel):
     id: UUID
     title: str
