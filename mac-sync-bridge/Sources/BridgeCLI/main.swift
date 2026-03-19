@@ -45,8 +45,9 @@ struct BridgeCLIApp {
         print("authorization=\(authorization.rawValue)")
         print("backend=\(persistedConfiguration.backendBaseURL.absoluteString)")
         print("sqlite=\(configuration.sqliteURL.path)")
+        let defaultListIdentifier = persistedConfiguration.defaultReminderListIdentifier ?? "<none>"
         print("interval=\(Int(persistedConfiguration.syncIntervalSeconds))s")
-        print("default_list=\(persistedConfiguration.defaultReminderListIdentifier ?? \"<none>\")")
+        print("default_list=\(defaultListIdentifier)")
         print("synced_lists=\(configuration.syncedReminderListIdentifiers.joined(separator: ","))")
         if let lists {
             print("discovered_lists=\(lists.count)")
