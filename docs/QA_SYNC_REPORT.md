@@ -5,70 +5,71 @@
 范围：
 - 仓库文档核对：`README.md`、`backend/README.md`、`docs/API_SPEC.md`、`docs/DEPLOY_TEST_CHECKLIST.md`
 - 本地 backend 回归：health、tasks 主流程、assistant 高层接口、sync pull/push/ack/state
-- 线上环境核对：`https://gtd.5666.net`
-- 重点：sync 合同一致性、文档与实现是否一致、明显回归风险、易混淆点
+- 线上环境核对：`https://gtd.5666.net` 与 x2 容器现状
+- 重点：sync / assistant smoke、GitHub/main / 本地 / x2 一致性、明显回归风险
 
 ---
 
 ## 结论摘要
 
-整体判断：**仓库当前代码的 sync 能力明显已经超过“占位接口”阶段，本地主流程基本可用；但线上 `gtd.5666.net` 仍跑着旧版本/旧合同，和仓库文档、当前代码不一致。**
+本轮继续 QA 后，结论和上一版报告已经不同：
 
-另外，本轮 QA 打到了一个真实 bug：
-- `POST /api/sync/apple/pull` 的冲突分支在 SQLite 环境下会因为 naive/aware datetime 比较报错。
-- 我已做了一个小修复：对 mapping 相关时间统一做 `_normalize_dt()`，避免直接抛 `TypeError`。
-- 但进一步测试表明：**冲突判定逻辑本身仍偏脆**，在 SQLite 下可能因为 `updated_at` 粒度/刷新时机导致应判冲突时没有判出来。
+- **GitHub/main 与本地仓库 HEAD 一致**：当前本地 `main` 在 `5db050c`，与 `origin/main` 对齐。
+- **x2 线上 backend 已追上当前能力面**：`assistant/views/*`、`sync pull/push/ack/state` 都已在线，不再是“占位版未部署”。
+- **本地真正暴露出的回归点不在 sync 主逻辑，而在测试体系本身**：`backend/tests` 原先复用了一个全局 in-memory SQLite + 全局 TestClient，导致测试互相污染；单测单独跑是绿的，全量跑会假红。
+- **另外抓到一个小但真实的 sync 细节问题**：retryable failed 的 delivery 在下一次 push 重发时，会把上次失败的错误上下文清空，排障价值差。我已做最小修复，改为保留 `last_error_code / last_error_message`。
 
-所以当前状态更准确地说是：
-- **Happy path：通过**
-- **冲突 path：仍有风险**
-- **线上部署与文档：明显不一致**
+当前更准确的状态：
+- **sync / assistant 本地主链路：通过**
+- **线上 `gtd.5666.net` smoke：通过**
+- **测试稳定性：已修复一处隔离问题**
+- **delivery 错误上下文保留：已修复**
+- **文档现状：上一版 QA 报告已过时，需要更新认知**
 
 ---
 
-## 已读文档与理解
+## 一致性核对
 
-### 1. `README.md`
-仓库根 README 宣称：
-- tasks / projects / tags 已可运行
-- Apple sync 已有 `pull / push / ack / state`
-- sync 字段与 per-bridge checkpoint 已持久化
-- 已适合开始部署测试
+### 1. GitHub/main vs 本地
 
-### 2. `backend/README.md`
-后端 README 进一步明确：
-- assistant 高层接口已实现：
-  - `POST /api/assistant/capture`
-  - `GET /api/assistant/views/today`
-  - `GET /api/assistant/views/waiting`
-- sync 已实现：
-  - `POST /api/sync/apple/pull`
-  - `POST /api/sync/apple/push`
-  - `POST /api/sync/apple/ack`
-  - `GET /api/sync/apple/state/{bridge_id}`
-- 当前不是纯占位，而是面向真实 bridge bring-up 的最小可用合同
+仓库状态：
+- `main` = `5db050c`
+- `origin/main` = `5db050c`
 
-### 3. `docs/API_SPEC.md`
-API 文档大体已跟上代码方向，尤其 sync 段落已经描述为：
-- pull: 接收 Apple 侧 change 并落库
-- push: 返回待回写本地任务变更
-- ack: 按 success/failed/conflict/stale 处理
-- state: 返回 per-bridge checkpoint
-- assistant: today / waiting / capture 已是“部分已实现”
+结论：
+- 当前工作树基线与 GitHub/main 一致，没有“本地比远端多/少一截”的问题。
 
-但文档尾部“与当前代码的差异说明”等历史段落还有残留，容易让人以为 reopen / batch-update / sync / assistant 仍未落地。**同一文档内部有旧叙述残留，存在认知噪音。**
+### 2. x2 线上现状
 
-### 4. `docs/DEPLOY_TEST_CHECKLIST.md`
-这份文档已经明显过时：
-- 还写着 sync 是“契约占位实现”
-- 但当前仓库代码和测试已经不是占位
-- 且线上环境实际又确实还是占位/旧版
+通过 SSH 检查 x2：
+- 主机：`43.134.109.206`
+- `docker ps` 可见容器：`ios-gtd-backend`
+- compose 工作目录：`/opt/ios-gtd`
+- backend 容器环境：
+  - `APP_ENV=prod`
+  - `APP_PORT=8000`
+  - `DATABASE_URL=sqlite:////app/data/gtd.db`
 
-这会导致很严重的误导：
-- 看仓库代码：你会以为线上也该支持完整 sync/state/assistant
-- 看 checklist：你又会以为线上只有占位也算正常
+线上容器内已可导入当前 sync 路由代码；从接口行为看，也符合当前合同，不再是此前 QA 报告中的旧占位实现。
 
-建议把它改成“当前仓库能力 vs 当前线上已部署能力”双栏说明，避免混淆。
+### 3. 线上接口 smoke
+
+目标：`https://gtd.5666.net/api`
+
+通过：
+- `GET /api/health` → 200
+- `GET /api/assistant/views/today` → 200
+- `GET /api/assistant/views/waiting` → 200
+- `POST /api/sync/apple/pull`（空 changes）→ 200
+- `POST /api/sync/apple/push`（空 tasks）→ 200
+- `POST /api/sync/apple/ack`（空 acks）→ 200
+- `GET /api/sync/apple/state/{bridge_id}` → 200
+
+assistant capture 合同补充：
+- `POST /api/assistant/capture` 使用 `{"text": ...}` 会得到 422
+- 正确请求体是 `{"input": ..., "dry_run": true}` → 200
+
+所以线上/仓库现在的主要“不一致”不是接口缺失，而是**旧 QA 认知和当前事实不一致**。
 
 ---
 
@@ -81,202 +82,154 @@ API 文档大体已跟上代码方向，尤其 sync 段落已经描述为：
 
 ### A. 自动化测试
 
-结果：**7 passed（原始测试集）**
+结果：**11 passed**
 
-已覆盖：
+覆盖：
 - health
 - task lifecycle（create / complete / reopen / soft delete）
 - batch update
 - sync pull / push / ack 主流程
 - delete via pull
-- stale ack + push cursor 过滤
+- stale ack + push cursor 去重
+- conflict path
+- ack change_id 合同
+- retryable failed 重推
 - state endpoint
 
-### B. 本地手工 / smoke 验证
+### B. 本地 / 线上 smoke
 
-在迁移数据库到最新 schema 后，以下接口 smoke 通过：
+本地重点：
+- sync conflict 用例单独跑通过
+- sync pull/push/ack 主流程用例单独跑通过
+- 全量回归通过
 
-#### health
-- `GET /api/health` → 200
-
-#### tasks 主流程
-- `POST /api/projects` → 200/201
-- `POST /api/tags` → 200/201
-- `POST /api/tasks` → 201
-- `PATCH /api/tasks/{id}` → 200
-- `POST /api/tasks/{id}/complete` → 200
-- `POST /api/tasks/{id}/reopen` → 200
-- `DELETE /api/tasks/{id}` → 204
-- `GET /api/tasks` 默认隐藏软删任务 → 符合预期
-- `GET /api/tasks?include_deleted=true` 能看到软删任务 → 符合预期
-
-#### assistant
-- `POST /api/assistant/capture` → 200
-- `POST /api/assistant/capture` with `dry_run=true` → 200
-- `GET /api/assistant/views/today` → 200
-- `GET /api/assistant/views/waiting` → 200
-
-#### sync（happy path）
-- `GET /api/sync/apple/state/{bridge_id}` → 200
-- `POST /api/sync/apple/pull`（空 changes）→ 200
-- `POST /api/sync/apple/push`（空 / 有 pending）→ 200
-- `POST /api/sync/apple/ack`（空 / success ack）→ 200
-- `ack future version` → 409，符合预期
+线上重点：
+- assistant views 在线
+- sync state 在线
+- pull/push/ack 在线且返回当前结构
+- `assistant/capture` 需使用 `input` 字段
 
 ---
 
-## 本地发现的问题
+## 本轮发现的问题
 
-### 1. sync conflict 分支会抛 datetime 比较异常
+### 1. 测试隔离缺失导致全量 pytest 假红
 
-严重性：**高**
-
-现象：
-- 在 SQLite 下构造“先同步、再本地修改、再远端更新”的冲突场景时，`POST /api/sync/apple/pull` 会触发：
-- `TypeError: can't compare offset-naive and offset-aware datetimes`
-
-定位：
-- 文件：`backend/app/api/routes/sync.py`
-- 原因：`remote_modified_at` / `local_updated_at` 做了 normalize，但 `mapping.last_seen_apple_modified_at` 与 `mapping.updated_at` 没统一 normalize。
-
-本轮已修：
-- 对 `mapping.last_seen_apple_modified_at` 和 `mapping.updated_at` 增加 `_normalize_dt()` 处理，避免直接炸掉。
-
-### 2. 冲突判定逻辑本身仍不稳
-
-严重性：**高**
+严重性：**高（对 QA 可信度而言）**
 
 现象：
-- 修掉 datetime 类型错误后，再次构造冲突场景，接口不再报错；
-- 但预期的 `conflicts == 1` 没有出现，说明这条规则：
-  - `remote_modified_at > last_seen_apple_modified_at`
-  - `local_updated_at > mapping_updated_at`
-  在 SQLite 环境下非常依赖 DB 时间精度和刷新时机。
+- 部分 sync 用例单独执行通过；
+- 但全量 `pytest -q` 会出现 task / mapping / delivery 查询异常，像是任务“消失”或断言错位；
+- 根因不是业务逻辑回归，而是 `backend/tests/test_api.py` 在模块加载时创建了全局 `TestClient + in-memory SQLite`，所有测试共用一份状态。
 
 影响：
-- 代码声称采用保守冲突策略，但实际可能把冲突误判成普通 applied/update。
-- 这会直接影响 sync 合同可靠性。
+- QA 结果会被前序测试污染，出现假阴性；
+- 很容易误判成 sync 主链路回归。
 
-建议：
-- 不要把“是否本地修改过”完全绑定在 `updated_at > mapping.updated_at` 上。
-- 更稳妥的是结合：
-  - `task.sync_pending`
-  - `task.version > mapping.last_synced_task_version`
-  - 必要时再辅以时间字段
-- 补一条真正能稳定命中的 conflict 回归测试。
+本轮已修：
+- 新增 `backend/tests/conftest.py`
+- 改成每个测试通过 fixture 获取独立的 `TestClient + SessionLocal`
+- `test_api.py`、`test_sync_ack_change_id.py` 改为按测试注入上下文
 
-### 3. 本地数据库如果没跑迁移，会在 sync/state 直接报表不存在
+结果：
+- 全量测试恢复稳定，`11 passed`。
+
+### 2. retryable failed delivery 在重推时会清空错误上下文
 
 严重性：**中**
 
 现象：
-- 直接使用已有 `backend/gtd.db` 做本地联调时，请求 `sync` 新接口会报：
-  - `no such table: sync_bridge_states`
+- 某条变更 ack 失败且 `retryable=true` 后，delivery 记录会带上 `last_error_code=timeout` 等错误信息；
+- 下一次 push 重发同一 delivery 时，代码把这些错误字段清空；
+- 这会让 `/sync/apple/state/{bridge_id}` 或后续排查少掉最近失败原因。
 
-这不是代码 bug，而是**文档/联调体验风险**：
-- README 虽然写了要 `alembic upgrade head`
-- 但如果有人直接 `uvicorn` 启起来，就会在 sync 链路踩坑
+影响：
+- 不影响主链路成功/失败语义；
+- 但会降低 bridge 联调和线上排障可观测性。
 
-建议：
-- 在 README/部署清单里显式强调：**sync QA 前必须先 migrate 到 head**
-- 最好在启动或 health 中暴露 schema version / migration mismatch 提示
+本轮已修：
+- `_get_or_create_delivery()` 在复用既有 delivery 重推时，不再清空：
+  - `retryable`
+  - `last_error_code`
+  - `last_error_message`
+- 仍会把 `status` 置回 `pending`，保留“正在重试”的语义，同时不丢上次失败上下文。
 
----
+### 3. assistant capture 合同容易写错字段
 
-## 线上环境测试结果（gtd.5666.net）
+严重性：**低**
 
-测试目标：`https://gtd.5666.net/api`
+现象：
+- 直觉上容易发 `{"text": ...}`；
+- 实际 schema 要求 `{"input": ...}`。
 
-### 线上通过
-- `GET /api/health` → 200
-- 返回：`{"status":"ok","app":"ios-gtd-backend","env":"prod"}`
-
-### 线上失败 / 与仓库不一致
-
-#### 1. assistant 路由不存在
-- `GET /api/assistant/views/today` → 404
-- `GET /api/assistant/views/waiting` → 404
-
-#### 2. sync state 路由不存在
-- `GET /api/sync/apple/state/{bridge_id}` → 404
-
-#### 3. sync 仍是旧占位实现
-- `POST /api/sync/apple/push` → 200，但返回：
-  - `"message":"sync push placeholder is ready for bridge integration"`
-- `POST /api/sync/apple/pull` → 200，但返回：
-  - `"message":"sync pull placeholder is ready for bridge integration"`
-- `POST /api/sync/apple/ack` → 200，但返回：
-  - `"message":"sync ack placeholder recorded mappings"`
-
-结论：
-- **线上 `gtd.5666.net` 不是当前仓库 HEAD 的 backend 行为。**
-- 至少 assistant 和 sync state 没部署上去；sync 三接口也仍是老占位版本。
-
-这也是本轮 QA 最重要的外部发现。
+影响：
+- smoke 时容易误判接口异常；
+- 也提示 README / API_SPEC /示例里最好统一强化这一点。
 
 ---
 
 ## 文档与实现一致性检查
 
-### 一致的部分
-- 仓库 README / backend README / API_SPEC 主体，已经大体反映当前代码：
-  - reopen 已实现
-  - batch-update 已实现
-  - assistant today/waiting/capture 已实现
-  - sync pull/push/ack/state 已实现
+### 当前一致的部分
+- 仓库代码、GitHub/main、本地 HEAD：一致
+- x2 线上能力面：已基本追上当前仓库合同
+- sync / assistant 主接口：线上与本地 smoke 一致
 
-### 不一致 / 易混淆部分
+### 当前不一致 / 易误导的部分
+1. **`docs/QA_SYNC_REPORT.md` 的旧结论已经过时**
+   - 里面仍写线上是旧占位版；
+   - 这不再符合当前事实。
 
-#### 1. `docs/DEPLOY_TEST_CHECKLIST.md` 过时
-仍把 sync 描述成“占位接口”，与当前代码不符。
+2. **`docs/DEPLOY_TEST_CHECKLIST.md` 仍偏旧**
+   - 依然把 sync 描述得偏“占位/待接线”；
+   - 需要更新为当前合同与当前部署检查项。
 
-#### 2. `docs/API_SPEC.md` 底部存在旧叙述残留
-例如“与当前代码的差异说明”“最小实现优先级建议”等段落，和前文“已实现”描述已经不完全一致。
-
-#### 3. 文档没有明确区分“仓库能力”和“线上已部署能力”
-当前最大问题不是文档完全错，而是：
-- 文档写的是仓库现状
-- 线上跑的是旧部署
-- 文档没有提醒这一点
-
----
-
-## 建议
-
-### P0（建议马上做）
-1. **重新部署线上 backend 到当前仓库版本**
-   - 目标：至少让 assistant today/waiting、sync state、真实 sync 合同上线上
-2. **补一个稳定命中的 conflict 回归测试**
-   - 防止 sync 冲突检测名义上存在、实际上经常判不到
-3. **修正文档：明确线上当前版本落后于仓库**
-   - 至少更新 `docs/DEPLOY_TEST_CHECKLIST.md`
-
-### P1
-4. **重构 conflict 判定逻辑**
-   - 更依赖 version / last_synced_task_version / sync_pending
-   - 少依赖 SQLite 上不稳定的 timestamp 比较
-5. **把 migration 要求写得更醒目**
-   - sync/state QA 前必须 `alembic upgrade head`
-6. **增加一条线上部署后 smoke checklist**
-   - health
-   - assistant today/waiting
-   - sync state
-   - sync push/pull/ack 返回结构检查
-
-### P2
-7. **在 health 或独立诊断接口暴露 build/version/schema 信息**
-   - 这样一眼就能看出线上是否部署到对应 commit
+3. **assistant capture 请求样例需要更明确写 `input`**
+   - 否则 smoke 很容易误发成 `text`。
 
 ---
 
 ## 本轮修改
 
-我做了一个小而明确的修复：
-- 文件：`backend/app/api/routes/sync.py`
-- 内容：sync conflict 比较时，对 mapping 的 datetime 也统一走 `_normalize_dt()`
-- 目的：避免 SQLite/驱动差异导致的 naive vs aware datetime 异常
+### 代码
+- `backend/app/api/routes/sync.py`
+  - 修复 retryable failed delivery 在重推时清空错误上下文的问题
 
-我还尝试补一条 conflict 回归测试，但当前逻辑无法稳定命中“conflict”判定，因此**未将该失败测试保留在提交中**。这本身也说明冲突逻辑还需要进一步设计/加固。
+### 测试
+- `backend/tests/conftest.py`
+  - 新增测试 fixture，给每个测试独立 DB / client
+- `backend/tests/test_api.py`
+  - 改为使用 fixture 注入测试上下文
+- `backend/tests/test_sync_ack_change_id.py`
+  - 改为使用 fixture 注入测试上下文
+  - 调整 stale ack 断言为符合当前 change_id 语义
+  - 补充 retryable failed 后 state 可观测性断言
+
+---
+
+## 建议
+
+### P0
+1. **更新/替换旧 QA 报告认知**
+   - 不要再把线上 `gtd.5666.net` 视为旧占位版。
+
+2. **更新 deploy / smoke 文档**
+   - 明确当前线上 smoke 该检查：
+     - health
+     - assistant views
+     - assistant capture（`input` 字段）
+     - sync pull/push/ack/state
+
+3. **保留测试隔离方案**
+   - 不要再回到全局共享 in-memory DB 的模式。
+
+### P1
+4. **在 state 或诊断接口里继续加强 delivery 可观测性**
+   - 当前保留 last error 已经更好；
+   - 后续可以继续补 attempt timeline / 最近失败摘要。
+
+5. **补充 README / API_SPEC 中 assistant capture 的正确示例**
+   - 把 `input` 字段写醒目。
 
 ---
 
@@ -286,14 +239,14 @@ API 文档大体已跟上代码方向，尤其 sync 段落已经描述为：
 - tasks 主流程：**通过**
 - assistant 高层接口：**通过**
 - sync happy path：**通过**
-- sync conflict path：**存在高风险**
+- sync conflict path：**通过（至少当前回归测试稳定）**
+- delivery retry 可观测性：**已改进**
 
 ### 线上环境 `gtd.5666.net`
 - health：**通过**
-- assistant：**失败（未部署）**
-- sync state：**失败（未部署）**
-- sync push/pull/ack：**仅旧占位实现在线，不符合当前仓库合同**
+- assistant views：**通过**
+- assistant capture：**通过（注意字段为 `input`）**
+- sync pull/push/ack/state：**通过**
 
 ### 综合
-**这次 QA 最大结论不是“sync 全坏了”，而是“仓库代码和线上部署已经分叉”。**
-如果接下来要做真实 bridge 联调，建议先把线上环境升级到当前 backend 版本，否则文档、代码、线上行为会一直对不上。
+**本轮 QA 的关键结论是：线上/仓库能力面已经基本对齐，当前更大的风险在“测试体系是否可靠”和“旧文档/旧 QA 结论是否还在误导人”。**
