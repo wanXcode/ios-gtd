@@ -163,6 +163,66 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
         XCTAssertEqual(response.items.first?.task.dueDate?.timeIntervalSince1970, 1_774_912_400, accuracy: 0.001)
     }
 
+    func testPushChangesMatchesAcceptedItemToThirdRequestByReminderSourceRef() async throws {
+        let session = StubURLSession(response: .http(statusCode: 200), data: pushFixturePartialAccepted.data(using: .utf8)!)
+        let client = makeClient(session: session)
+
+        let response = try await client.pushChanges(
+            request: PushChangesRequest(
+                bridgeID: "bridge-contract",
+                cursor: "push-cursor-3",
+                tasks: [
+                    PushTaskMutation(
+                        taskID: "task-backend-001",
+                        reminderID: "reminder-local-001",
+                        title: "Bridge smoke test 001",
+                        listName: "Inbox",
+                        listIdentifier: "inbox",
+                        externalIdentifier: "reminder-ext-001",
+                        state: .active,
+                        fingerprint: ReminderFingerprint(value: "fp-001"),
+                        lastModifiedAt: Date(timeIntervalSince1970: 1_742_368_000),
+                        backendVersionToken: "v1",
+                        backendChangeID: 41
+                    ),
+                    PushTaskMutation(
+                        taskID: "task-backend-002",
+                        reminderID: "reminder-local-002",
+                        title: "Bridge smoke test 002",
+                        listName: "Inbox",
+                        listIdentifier: "inbox",
+                        externalIdentifier: "reminder-ext-002",
+                        state: .active,
+                        fingerprint: ReminderFingerprint(value: "fp-002"),
+                        lastModifiedAt: Date(timeIntervalSince1970: 1_742_368_100),
+                        backendVersionToken: "v2",
+                        backendChangeID: 42
+                    ),
+                    PushTaskMutation(
+                        taskID: nil,
+                        reminderID: "reminder-local-003",
+                        title: "Bridge smoke test 003",
+                        listName: "Inbox",
+                        listIdentifier: "inbox",
+                        externalIdentifier: "reminder-ext-003",
+                        state: .active,
+                        fingerprint: ReminderFingerprint(value: "fp-003"),
+                        lastModifiedAt: Date(timeIntervalSince1970: 1_742_368_200),
+                        backendVersionToken: nil,
+                        backendChangeID: nil
+                    )
+                ],
+                limit: 20
+            )
+        )
+
+        XCTAssertEqual(response.accepted.count, 1)
+        XCTAssertEqual(response.items.count, 1)
+        XCTAssertEqual(response.accepted.first?.reminderID, "reminder-local-003")
+        XCTAssertEqual(response.accepted.first?.task.id, "task-backend-003")
+        XCTAssertEqual(response.accepted.first?.task.sourceRecordID, "reminder-local-003")
+    }
+
     func testAckChangesSendsExpectedPayloadAndAcceptsCheckpointEnvelope() async throws {
         let session = StubURLSession(response: .http(statusCode: 200), data: ackFixture.data(using: .utf8)!)
         let client = makeClient(session: session)
@@ -419,6 +479,63 @@ private let pushFixtureWithoutZulu = #"""
     "backend_cursor": "2026-03-19T16:54:04.200718",
     "last_push_cursor": "44",
     "last_acked_change_id": 43
+  }
+}
+"""#
+
+private let pushFixturePartialAccepted = #"""
+{
+  "mode": "delta",
+  "accepted": [
+    {
+      "task_id": "task-backend-003",
+      "version": 1,
+      "change_id": 45,
+      "operation": "upsert",
+      "task": {
+        "title": "Bridge smoke test 003",
+        "note": "Created locally",
+        "due_at": "2026-03-19T11:00:00Z",
+        "remind_at": "2026-03-19T10:45:00Z",
+        "is_all_day_due": false,
+        "priority": 2,
+        "list_name": "Inbox",
+        "source_ref": "reminder-local-003",
+        "updated_at": "2026-03-19T11:01:00Z",
+        "version": 1,
+        "change_id": 45,
+        "status": "active",
+        "bucket": "inbox"
+      }
+    }
+  ],
+  "items": [
+    {
+      "task_id": "task-backend-003",
+      "version": 1,
+      "change_id": 45,
+      "operation": "upsert",
+      "task": {
+        "title": "Bridge smoke test 003",
+        "note": "Created locally",
+        "due_at": "2026-03-19T11:00:00Z",
+        "remind_at": "2026-03-19T10:45:00Z",
+        "is_all_day_due": false,
+        "priority": 2,
+        "list_name": "Inbox",
+        "source_ref": "reminder-local-003",
+        "updated_at": "2026-03-19T11:01:00Z",
+        "version": 1,
+        "change_id": 45,
+        "status": "active",
+        "bucket": "inbox"
+      }
+    }
+  ],
+  "checkpoint": {
+    "backend_cursor": "cursor-45",
+    "last_push_cursor": "cursor-push-10",
+    "last_acked_change_id": 44
   }
 }
 """#

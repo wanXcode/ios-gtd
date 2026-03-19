@@ -166,9 +166,7 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
         )
         let acceptedItems = (response.accepted ?? response.items).map(\.remoteEnvelope)
         let items = response.items.map(\.remoteEnvelope)
-        let accepted: [PushTaskResult] = zip(request.tasks, acceptedItems).map { mutation, item in
-            PushTaskResult(reminderID: mutation.reminderID, task: item.task)
-        }
+        let accepted: [PushTaskResult] = matchAcceptedResults(requestTasks: request.tasks, acceptedItems: acceptedItems)
         return PushChangesResponse(
             accepted: accepted,
             rejectedReminderIDs: response.rejectedReminderIDs,
@@ -185,6 +183,13 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
             body: request,
             responseType: APIAckResponse.self
         )
+    }
+
+    private func matchAcceptedResults(
+        requestTasks: [PushTaskMutation],
+        acceptedItems: [RemoteTaskEnvelope]
+    ) -> [PushTaskResult] {
+        matchAcceptedPushResults(requestTasks: requestTasks, acceptedItems: acceptedItems)
     }
 
     private func sendJSON<RequestBody: Encodable, ResponseBody: Decodable>(
@@ -273,9 +278,7 @@ public actor InMemoryBackendSyncClient: BackendSyncClient {
             cursorSequence = changeID
             return RemoteTaskEnvelope(taskID: taskID, version: version, changeID: changeID, operation: task.state == .deleted ? "delete" : "upsert", task: task)
         }
-        let accepted: [PushTaskResult] = zip(request.tasks, items).map { mutation, item in
-            PushTaskResult(reminderID: mutation.reminderID, task: item.task)
-        }
+        let accepted: [PushTaskResult] = matchAcceptedPushResults(requestTasks: request.tasks, acceptedItems: items)
         return PushChangesResponse(
             accepted: accepted,
             items: items,
@@ -352,6 +355,59 @@ private struct APIPushItem: Decodable {
             operation: operation,
             task: task.backendTaskRecord(taskID: taskId, fallbackVersion: version, fallbackChangeID: changeId)
         )
+    }
+}
+
+private func matchAcceptedPushResults(
+    requestTasks: [PushTaskMutation],
+    acceptedItems: [RemoteTaskEnvelope]
+) -> [PushTaskResult] {
+    var unmatchedByTaskID = Dictionary(grouping: requestTasks.enumerated(), by: { $0.element.taskID ?? "" })
+    var unmatchedByExternalIdentifier = Dictionary(grouping: requestTasks.enumerated(), by: { $0.element.externalIdentifier ?? "" })
+    var unmatchedByReminderID = Dictionary(grouping: requestTasks.enumerated(), by: { $0.element.reminderID })
+    var consumedIndexes = Set<Int>()
+
+    func consumeMatch(_ key: String, from buckets: inout [String: [(offset: Int, element: PushTaskMutation)]]) -> PushTaskMutation? {
+        guard !key.isEmpty, var matches = buckets[key], let matched = matches.first else {
+            return nil
+        }
+        matches.removeFirst()
+        if matches.isEmpty {
+            buckets.removeValue(forKey: key)
+        } else {
+            buckets[key] = matches
+        }
+        consumedIndexes.insert(matched.offset)
+        return matched.element
+    }
+
+    func consumeMatch(for item: RemoteTaskEnvelope) -> PushTaskMutation? {
+        if let match = consumeMatch(item.taskID, from: &unmatchedByTaskID) {
+            return match
+        }
+        if let sourceRef = item.task.sourceRecordID {
+            if let match = consumeMatch(sourceRef, from: &unmatchedByExternalIdentifier) {
+                return match
+            }
+            if let match = consumeMatch(sourceRef, from: &unmatchedByReminderID) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    let matched = acceptedItems.compactMap { item -> PushTaskResult? in
+        guard let mutation = consumeMatch(for: item) else {
+            return nil
+        }
+        return PushTaskResult(reminderID: mutation.reminderID, task: item.task)
+    }
+
+    return matched + requestTasks.enumerated().compactMap { index, mutation in
+        guard !consumedIndexes.contains(index) else { return nil }
+        guard let acceptedItem = acceptedItems.first(where: { $0.taskID == mutation.taskID }) else { return nil }
+        consumedIndexes.insert(index)
+        return PushTaskResult(reminderID: mutation.reminderID, task: acceptedItem.task)
     }
 }
 
