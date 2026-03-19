@@ -121,11 +121,8 @@ def _get_or_create_delivery(
         delivery.attempt_count += 1
         delivery.last_pushed_at = now
         delivery.status = "pending"
-        delivery.retryable = False
         delivery.failed_at = None
         delivery.acked_at = None
-        delivery.last_error_code = None
-        delivery.last_error_message = None
         delivery.task_version = version
         delivery.operation = operation
         delivery.remote_id = remote_id or delivery.remote_id

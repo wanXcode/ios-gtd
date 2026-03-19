@@ -106,8 +106,8 @@ def test_retryable_failed_ack_keeps_delivery_ledger_and_requeues_task(
         assert delivery is not None
         assert delivery.status == "pending"
         assert delivery.attempt_count == 2
-        assert delivery.last_error_code is None
-        assert delivery.last_error_message is None
+        assert delivery.last_error_code == "timeout"
+        assert delivery.last_error_message == "bridge timeout"
         assert delivery.acked_at is None
         assert state.last_failed_change_id == item["change_id"]
 
