@@ -14,6 +14,8 @@ struct BridgeCLIApp {
             switch command {
             case "doctor":
                 try await runDoctor(configuration: configuration)
+            case "list-lists":
+                try await runListLists(configuration: configuration)
             case "sync-once", "run":
                 try await runSyncOnce(configuration: configuration)
             case "print-config":
@@ -43,6 +45,19 @@ struct BridgeCLIApp {
         print("synced_lists=\(configuration.syncedReminderListIdentifiers.joined(separator: ","))")
         if let lists {
             print("discovered_lists=\(lists.count)")
+            for list in lists {
+                print("list.id=\(list.identifier) title=\(list.title) writable=\(list.allowsContentModifications) source=\(list.sourceIdentifier ?? \"<unknown>\")")
+            }
+        }
+    }
+
+    private static func runListLists(configuration: BridgeRuntimeConfiguration) async throws {
+        let runtime = try await BridgeRuntimeConfigurationLoader().makeRuntime(configuration: configuration)
+        let authorization = try await runtime.reminderStore.authorizationStatus()
+        print("authorization=\(authorization.rawValue)")
+        let lists = try await runtime.reminderStore.fetchReminderLists()
+        for list in lists {
+            print("\(list.identifier)\t\(list.title)\twritable=\(list.allowsContentModifications)\tsource=\(list.sourceIdentifier ?? \"<unknown>\")")
         }
     }
 
