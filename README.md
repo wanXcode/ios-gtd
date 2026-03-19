@@ -1,10 +1,28 @@
 # ios-gtd
 
-基于 `docs/PRD.md` 与 `docs/TECH_SPEC.md` 的第一阶段实现，目前已落下一个可运行的 MVP 后端骨架。
+一个以 GTD 主库为核心、以 Apple Reminders 为原生入口之一、以 AI 对话为整理入口的个人任务系统。
 
-## 当前范围
+当前仓库已经有第一阶段的后端 MVP 骨架，同时补齐了接口设计与路线图文档，方便继续直接开发。
 
-已完成：
+## 项目概览
+
+目标不是再做一个普通 todo app，而是先跑通这条链路：
+
+- 后端维护统一任务主库
+- Apple Reminders 继续作为日常原生入口
+- AI 可以直接查询、整理、批量修改任务
+- 后端与 Apple Reminders 最终实现双向同步
+
+当前技术路线保持与 `docs/PRD.md`、`docs/TECH_SPEC.md` 一致：
+
+- Backend：FastAPI + SQLAlchemy + Alembic
+- DB：开发环境 SQLite，生产建议 PostgreSQL
+- Sync Bridge：后续采用 macOS + Swift + EventKit
+- AI Layer：通过后端 API 承接自然语言任务操作
+
+## 当前仓库状态
+
+已落地：
 
 - `backend/` FastAPI 项目结构
 - 配置管理（`pydantic-settings`）
@@ -19,6 +37,16 @@
   - `GET/PATCH/DELETE /api/tasks/{id}`
   - `POST /api/tasks/{id}/complete`
 - 最小测试样例
+
+已补齐文档：
+
+- `docs/API_SPEC.md`：接口规范，覆盖 tasks / projects / tags / sync / assistant
+- `docs/ROADMAP.md`：MVP 里程碑、优先级、阶段任务、风险
+
+注意：
+
+- 当前代码实现的接口能力，以 Swagger 与 `backend/app/api/routes/` 为准
+- `docs/API_SPEC.md` 中已明确区分“已实现”和“规划中”接口，便于继续增量开发
 
 ## 目录
 
@@ -35,19 +63,31 @@ ios-gtd/
     ROADMAP.md
 ```
 
+## 文档导航
+
+- 产品目标与边界：`docs/PRD.md`
+- 架构、模型与技术路线：`docs/TECH_SPEC.md`
+- 接口设计与请求/响应约定：`docs/API_SPEC.md`
+- 开发路线图与优先级：`docs/ROADMAP.md`
+
+如果准备继续写代码，建议阅读顺序：
+
+1. `docs/PRD.md`
+2. `docs/TECH_SPEC.md`
+3. `docs/API_SPEC.md`
+4. `docs/ROADMAP.md`
+
 ## 本地启动
 
 ```bash
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'
+pip install -e .[dev]
 cp .env.example .env
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
-
-当前实现支持 Python 3.11+。
 
 访问：
 
@@ -68,10 +108,14 @@ DATABASE_URL=sqlite:///./gtd.db
 DATABASE_URL=postgresql+psycopg://user:password@host:5432/ios_gtd
 ```
 
-## 下一步建议
+## 推荐下一步
 
-- 补任务批量更新 / reopen / done filtering
-- 增加 operation_logs 自动记录
-- 落地 Apple sync pull/push/ack API
-- 增加 assistant 高层接口
-- 引入 auth、structured logging、settings 分层
+按当前文档设计，建议优先继续做：
+
+1. `POST /tasks/{id}/reopen`
+2. `POST /tasks/batch-update`
+3. `operation_logs` 自动写入
+4. Apple sync 的 run / pull / push / ack 主链路
+5. assistant 的 capture / today / inbox-organize
+
+这几项补完后，项目会从“有骨架”进入“可跑 GTD 闭环”的阶段。
