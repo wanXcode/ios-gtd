@@ -2,7 +2,9 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
+
+from app.utils_datetime import isoformat_z
 
 
 class SyncApplePullRequest(BaseModel):
@@ -100,6 +102,10 @@ class SyncBridgeDeliverySummary(BaseModel):
     acked_at: datetime | None = None
     failed_at: datetime | None = None
 
+    @field_serializer("first_pushed_at", "last_pushed_at", "acked_at", "failed_at", when_used="json")
+    def serialize_datetimes(self, value: datetime | None) -> str | None:
+        return isoformat_z(value)
+
 
 class SyncBridgeStateRead(BaseModel):
     bridge_id: str
@@ -122,3 +128,17 @@ class SyncBridgeStateRead(BaseModel):
     recent_deliveries: list[SyncBridgeDeliverySummary] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+    @field_serializer(
+        "last_pull_started_at",
+        "last_pull_succeeded_at",
+        "last_push_started_at",
+        "last_push_succeeded_at",
+        "last_ack_started_at",
+        "last_ack_succeeded_at",
+        "created_at",
+        "updated_at",
+        when_used="json",
+    )
+    def serialize_datetimes(self, value: datetime | None) -> str | None:
+        return isoformat_z(value)
