@@ -16,10 +16,15 @@ public actor SyncCoordinator {
 
         let checkpoint = try await dependencies.bridgeStore.loadCheckpoint()
         let mappings = try await dependencies.bridgeStore.loadMappings()
+        let pending = try await dependencies.bridgeStore.loadPendingOperations()
+        let pendingResult = try await consumePendingOperations(pending, now: startedAt)
         let reminders = try await dependencies.reminderStore.fetchReminders()
 
         let pulled = try await dependencies.backendClient.pullChanges(
-            request: PullChangesRequest(cursor: checkpoint.backendCursor)
+            request: PullChangesRequest(
+                bridgeID: dependencies.bridgeID,
+                cursor: checkpoint.lastPullCursor ?? checkpoint.backendCursor
+            )
         )
 
         let plan = buildPlan(
@@ -32,32 +37,51 @@ public actor SyncCoordinator {
         try await applyLocalChanges(plan.localUpserts, deletes: plan.localDeletes)
 
         let pushResponse: PushChangesResponse
-        if direction == .pull || plan.remoteMutations.isEmpty {
-            pushResponse = PushChangesResponse(accepted: [])
+        if direction == .pull {
+            pushResponse = PushChangesResponse(accepted: [], items: [])
         } else {
+            let remoteVersions = buildPushTaskVersions(from: plan.remoteMutations)
             pushResponse = try await dependencies.backendClient.pushChanges(
-                request: PushChangesRequest(changes: plan.remoteMutations)
+                request: PushChangesRequest(
+                    bridgeID: dependencies.bridgeID,
+                    cursor: checkpoint.lastPushCursor,
+                    tasks: remoteVersions
+                )
             )
         }
 
         try await persistPushResults(pushResponse.accepted, reminders: reminders)
 
-        let ackIDs = Array(Set(plan.ackTaskIDs + pushResponse.accepted.map(\.task.id)))
-        if !ackIDs.isEmpty {
+        let ackItems = buildAckItems(
+            taskIDs: Array(Set(plan.ackTaskIDs + pushResponse.accepted.map(\.task.id))),
+            acceptedPushes: pushResponse.accepted,
+            remoteItems: pushResponse.items,
+            reminders: reminders
+        )
+        if !ackItems.isEmpty {
             try await dependencies.backendClient.ackChanges(
-                request: AckRequest(taskIDs: ackIDs, cursor: pulled.nextCursor)
+                request: AckRequest(bridgeID: dependencies.bridgeID, acknowledgements: ackItems)
             )
         }
 
         let finishedAt = dependencies.dateProvider.now()
+        let acceptedChangeIDs = pushResponse.items.compactMap(\.changeID)
+        let ackedChangeIDs = ackItems.compactMap(\.changeID)
         let nextCheckpoint = SyncCheckpoint(
-            backendCursor: pulled.nextCursor ?? checkpoint.backendCursor,
+            backendCursor: pulled.backendCursor ?? pulled.nextCursor ?? checkpoint.backendCursor,
+            lastPullCursor: pulled.nextCursor ?? checkpoint.lastPullCursor,
+            lastPushCursor: pushResponse.nextCursor ?? checkpoint.lastPushCursor,
+            lastAckedChangeID: ackedChangeIDs.max() ?? checkpoint.lastAckedChangeID,
+            lastFailedChangeID: checkpoint.lastFailedChangeID,
+            lastSeenChangeID: (acceptedChangeIDs + ackedChangeIDs + [checkpoint.lastSeenChangeID].compactMap { $0 }).max(),
             lastSuccessfulSyncAt: finishedAt,
             lastSuccessfulPullAt: pulled.changes.isEmpty ? checkpoint.lastSuccessfulPullAt : finishedAt,
             lastSuccessfulPushAt: pushResponse.accepted.isEmpty ? checkpoint.lastSuccessfulPushAt : finishedAt,
-            lastSuccessfulAckAt: ackIDs.isEmpty ? checkpoint.lastSuccessfulAckAt : finishedAt,
+            lastSuccessfulAckAt: ackItems.isEmpty ? checkpoint.lastSuccessfulAckAt : finishedAt,
             lastAppleScanStartedAt: startedAt,
-            lastSyncStatus: "success"
+            lastSyncStatus: "success",
+            lastErrorCode: nil,
+            lastErrorMessage: nil
         )
         try await dependencies.bridgeStore.saveCheckpoint(nextCheckpoint)
 
@@ -68,9 +92,10 @@ public actor SyncCoordinator {
             finishedAt: finishedAt,
             pulledCount: pulled.changes.count,
             pushedCount: pushResponse.accepted.count,
-            ackedCount: ackIDs.count,
+            ackedCount: ackItems.count,
             conflictCount: plan.conflicts.count,
-            queuedRetryCount: queuedRetryCount
+            queuedRetryCount: queuedRetryCount,
+            consumedPendingCount: pendingResult.completedIDs.count
         )
     }
 
@@ -170,9 +195,11 @@ public actor SyncCoordinator {
 
         let now = dependencies.dateProvider.now()
         let rejectedSet = Set(rejectedReminderIDs)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
         let operations = mutations.compactMap { mutation -> PendingOperation? in
             guard rejectedSet.contains(mutation.reminderID) else { return nil }
-            let payload = try? JSONEncoder().encode(mutation)
+            let payload = try? encoder.encode(mutation)
             return PendingOperation(
                 kind: mutation.state == .deleted ? .deleteRemoteTask : .updateRemoteTask,
                 entityID: mutation.reminderID,
@@ -190,5 +217,60 @@ public actor SyncCoordinator {
             try await dependencies.bridgeStore.enqueuePendingOperations(operations)
         }
         return operations.count
+    }
+
+    private func consumePendingOperations(_ operations: [PendingOperation], now: Date) async throws -> PendingExecutionResult {
+        guard !operations.isEmpty else { return PendingExecutionResult() }
+        let result = try await dependencies.pendingExecutor.execute(operations, now: now)
+        if !result.completedIDs.isEmpty {
+            try await dependencies.bridgeStore.removePendingOperations(ids: result.completedIDs)
+        }
+        let updated = result.updatedOperations.filter { !result.completedIDs.contains($0.id) }
+        if !updated.isEmpty {
+            try await dependencies.bridgeStore.updatePendingOperations(updated)
+        }
+        return result
+    }
+
+    private func buildPushTaskVersions(from mutations: [PushTaskMutation]) -> [PushTaskVersion] {
+        mutations.compactMap { mutation in
+            guard let taskID = mutation.taskID else { return nil }
+            let version = mutation.backendVersionToken.flatMap(Self.extractVersionNumber) ?? 0
+            return PushTaskVersion(taskID: taskID, version: version)
+        }
+    }
+
+    private func buildAckItems(
+        taskIDs: [String],
+        acceptedPushes: [PushTaskResult],
+        remoteItems: [RemoteTaskEnvelope],
+        reminders: [ReminderRecord]
+    ) -> [AckItem] {
+        let reminderByTaskID = Dictionary(uniqueKeysWithValues: acceptedPushes.map { ($0.task.id, $0.reminderID) })
+        let reminderByID = Dictionary(uniqueKeysWithValues: reminders.map { ($0.id, $0) })
+        let remoteByTaskID = Dictionary(uniqueKeysWithValues: remoteItems.map { ($0.taskID, $0) })
+
+        return taskIDs.compactMap { taskID in
+            let remote = remoteByTaskID[taskID]
+            let reminderID = reminderByTaskID[taskID]
+            let reminder = reminderID.flatMap { reminderByID[$0] }
+            let version = remote?.version ?? Self.extractVersionNumber(remote?.task.versionToken) ?? 0
+            return AckItem(
+                taskID: taskID,
+                remoteID: reminder?.externalIdentifier,
+                version: version,
+                changeID: remote?.changeID ?? remote?.task.changeID,
+                status: "success",
+                appleModifiedAt: reminder?.lastModifiedAt,
+                appleListID: reminder?.listIdentifier,
+                appleCalendarID: reminder?.listIdentifier
+            )
+        }
+    }
+
+    private static func extractVersionNumber(_ versionToken: String?) -> Int? {
+        guard let versionToken else { return nil }
+        let digits = versionToken.filter(\.isNumber)
+        return Int(digits)
     }
 }

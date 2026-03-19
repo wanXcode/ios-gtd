@@ -47,12 +47,19 @@ public struct SQLiteSchemaDefinition: Sendable {
         CREATE TABLE IF NOT EXISTS sync_checkpoint (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             backend_cursor TEXT,
+            last_pull_cursor TEXT,
+            last_push_cursor TEXT,
+            last_acked_change_id INTEGER,
+            last_failed_change_id INTEGER,
+            last_seen_change_id INTEGER,
             last_successful_sync_at TEXT,
             last_successful_pull_at TEXT,
             last_successful_push_at TEXT,
             last_successful_ack_at TEXT,
             last_apple_scan_started_at TEXT,
             last_sync_status TEXT,
+            last_error_code TEXT,
+            last_error_message TEXT,
             updated_at TEXT NOT NULL
         );
         """,
@@ -229,12 +236,19 @@ public actor SQLiteBridgeStateStore: BridgeStateStore {
         try withDatabase { database in
             let sql = """
             SELECT backend_cursor,
+                   last_pull_cursor,
+                   last_push_cursor,
+                   last_acked_change_id,
+                   last_failed_change_id,
+                   last_seen_change_id,
                    last_successful_sync_at,
                    last_successful_pull_at,
                    last_successful_push_at,
                    last_successful_ack_at,
                    last_apple_scan_started_at,
-                   last_sync_status
+                   last_sync_status,
+                   last_error_code,
+                   last_error_message
             FROM sync_checkpoint
             WHERE id = 1
             LIMIT 1;
@@ -248,12 +262,19 @@ public actor SQLiteBridgeStateStore: BridgeStateStore {
 
             return SyncCheckpoint(
                 backendCursor: statement.optionalText(at: 0),
-                lastSuccessfulSyncAt: try Self.date(fromSQLiteText: statement.optionalText(at: 1), field: "last_successful_sync_at"),
-                lastSuccessfulPullAt: try Self.date(fromSQLiteText: statement.optionalText(at: 2), field: "last_successful_pull_at"),
-                lastSuccessfulPushAt: try Self.date(fromSQLiteText: statement.optionalText(at: 3), field: "last_successful_push_at"),
-                lastSuccessfulAckAt: try Self.date(fromSQLiteText: statement.optionalText(at: 4), field: "last_successful_ack_at"),
-                lastAppleScanStartedAt: try Self.date(fromSQLiteText: statement.optionalText(at: 5), field: "last_apple_scan_started_at"),
-                lastSyncStatus: statement.optionalText(at: 6)
+                lastPullCursor: statement.optionalText(at: 1),
+                lastPushCursor: statement.optionalText(at: 2),
+                lastAckedChangeID: statement.optionalInt(at: 3),
+                lastFailedChangeID: statement.optionalInt(at: 4),
+                lastSeenChangeID: statement.optionalInt(at: 5),
+                lastSuccessfulSyncAt: try Self.date(fromSQLiteText: statement.optionalText(at: 6), field: "last_successful_sync_at"),
+                lastSuccessfulPullAt: try Self.date(fromSQLiteText: statement.optionalText(at: 7), field: "last_successful_pull_at"),
+                lastSuccessfulPushAt: try Self.date(fromSQLiteText: statement.optionalText(at: 8), field: "last_successful_push_at"),
+                lastSuccessfulAckAt: try Self.date(fromSQLiteText: statement.optionalText(at: 9), field: "last_successful_ack_at"),
+                lastAppleScanStartedAt: try Self.date(fromSQLiteText: statement.optionalText(at: 10), field: "last_apple_scan_started_at"),
+                lastSyncStatus: statement.optionalText(at: 11),
+                lastErrorCode: statement.optionalText(at: 12),
+                lastErrorMessage: statement.optionalText(at: 13)
             )
         }
     }
@@ -265,34 +286,55 @@ public actor SQLiteBridgeStateStore: BridgeStateStore {
             INSERT INTO sync_checkpoint (
                 id,
                 backend_cursor,
+                last_pull_cursor,
+                last_push_cursor,
+                last_acked_change_id,
+                last_failed_change_id,
+                last_seen_change_id,
                 last_successful_sync_at,
                 last_successful_pull_at,
                 last_successful_push_at,
                 last_successful_ack_at,
                 last_apple_scan_started_at,
                 last_sync_status,
+                last_error_code,
+                last_error_message,
                 updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 backend_cursor = excluded.backend_cursor,
+                last_pull_cursor = excluded.last_pull_cursor,
+                last_push_cursor = excluded.last_push_cursor,
+                last_acked_change_id = excluded.last_acked_change_id,
+                last_failed_change_id = excluded.last_failed_change_id,
+                last_seen_change_id = excluded.last_seen_change_id,
                 last_successful_sync_at = excluded.last_successful_sync_at,
                 last_successful_pull_at = excluded.last_successful_pull_at,
                 last_successful_push_at = excluded.last_successful_push_at,
                 last_successful_ack_at = excluded.last_successful_ack_at,
                 last_apple_scan_started_at = excluded.last_apple_scan_started_at,
                 last_sync_status = excluded.last_sync_status,
+                last_error_code = excluded.last_error_code,
+                last_error_message = excluded.last_error_message,
                 updated_at = excluded.updated_at;
             """
             let statement = try database.prepare(sql: sql)
             defer { statement.finalize() }
             statement.bind(optionalText: checkpoint.backendCursor, at: 1)
-            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulSyncAt), at: 2)
-            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulPullAt), at: 3)
-            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulPushAt), at: 4)
-            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulAckAt), at: 5)
-            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastAppleScanStartedAt), at: 6)
-            statement.bind(optionalText: checkpoint.lastSyncStatus, at: 7)
-            statement.bind(text: now, at: 8)
+            statement.bind(optionalText: checkpoint.lastPullCursor, at: 2)
+            statement.bind(optionalText: checkpoint.lastPushCursor, at: 3)
+            statement.bind(optionalInt: checkpoint.lastAckedChangeID, at: 4)
+            statement.bind(optionalInt: checkpoint.lastFailedChangeID, at: 5)
+            statement.bind(optionalInt: checkpoint.lastSeenChangeID, at: 6)
+            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulSyncAt), at: 7)
+            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulPullAt), at: 8)
+            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulPushAt), at: 9)
+            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulAckAt), at: 10)
+            statement.bind(optionalText: Self.iso8601String(from: checkpoint.lastAppleScanStartedAt), at: 11)
+            statement.bind(optionalText: checkpoint.lastSyncStatus, at: 12)
+            statement.bind(optionalText: checkpoint.lastErrorCode, at: 13)
+            statement.bind(optionalText: checkpoint.lastErrorMessage, at: 14)
+            statement.bind(text: now, at: 15)
             try statement.runToCompletion()
         }
     }
@@ -539,16 +581,23 @@ public actor SQLiteBridgeStateStore: BridgeStateStore {
             guard count == 0 else { return }
 
             let now = Self.iso8601String(from: Date())
-            let insert = try database.prepare(sql: "INSERT INTO sync_checkpoint (id, backend_cursor, last_successful_sync_at, last_successful_pull_at, last_successful_push_at, last_successful_ack_at, last_apple_scan_started_at, last_sync_status, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?);")
+            let insert = try database.prepare(sql: "INSERT INTO sync_checkpoint (id, backend_cursor, last_pull_cursor, last_push_cursor, last_acked_change_id, last_failed_change_id, last_seen_change_id, last_successful_sync_at, last_successful_pull_at, last_successful_push_at, last_successful_ack_at, last_apple_scan_started_at, last_sync_status, last_error_code, last_error_message, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);")
             defer { insert.finalize() }
             insert.bind(optionalText: checkpoint.backendCursor, at: 1)
-            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulSyncAt), at: 2)
-            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulPullAt), at: 3)
-            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulPushAt), at: 4)
-            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulAckAt), at: 5)
-            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastAppleScanStartedAt), at: 6)
-            insert.bind(optionalText: checkpoint.lastSyncStatus, at: 7)
-            insert.bind(text: now, at: 8)
+            insert.bind(optionalText: checkpoint.lastPullCursor, at: 2)
+            insert.bind(optionalText: checkpoint.lastPushCursor, at: 3)
+            insert.bind(optionalInt: checkpoint.lastAckedChangeID, at: 4)
+            insert.bind(optionalInt: checkpoint.lastFailedChangeID, at: 5)
+            insert.bind(optionalInt: checkpoint.lastSeenChangeID, at: 6)
+            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulSyncAt), at: 7)
+            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulPullAt), at: 8)
+            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulPushAt), at: 9)
+            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastSuccessfulAckAt), at: 10)
+            insert.bind(optionalText: Self.iso8601String(from: checkpoint.lastAppleScanStartedAt), at: 11)
+            insert.bind(optionalText: checkpoint.lastSyncStatus, at: 12)
+            insert.bind(optionalText: checkpoint.lastErrorCode, at: 13)
+            insert.bind(optionalText: checkpoint.lastErrorMessage, at: 14)
+            insert.bind(text: now, at: 15)
             try insert.runToCompletion()
         }
     }
@@ -832,6 +881,14 @@ private final class SQLiteStatement {
         sqlite3_bind_int64(statement, index, int64)
     }
 
+    func bind(optionalInt: Int?, at index: Int32) {
+        if let value = optionalInt {
+            bind(int64: Int64(value), at: index)
+        } else {
+            sqlite3_bind_null(statement, index)
+        }
+    }
+
     func bind(blob: Data?, at index: Int32) {
         guard let data else {
             sqlite3_bind_null(statement, index)
@@ -878,6 +935,11 @@ private final class SQLiteStatement {
 
     func int64(at index: Int32) -> Int64 {
         sqlite3_column_int64(statement, index)
+    }
+
+    func optionalInt(at index: Int32) -> Int? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+        return Int(int64(at: index))
     }
 
     func blob(at index: Int32) -> Data? {

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -23,7 +24,7 @@ class SyncApplePullChangePayload(BaseModel):
 
 
 class SyncApplePullChange(BaseModel):
-    change_type: str = Field(pattern="^(upsert|delete)$")
+    change_type: Literal["upsert", "delete"]
     apple_reminder_id: str = Field(min_length=1)
     apple_list_id: str | None = None
     apple_calendar_id: str | None = None
@@ -48,7 +49,7 @@ class SyncAppleAckItem(BaseModel):
     remote_id: str | None = None
     version: int
     change_id: int | None = Field(default=None, ge=1)
-    status: str = Field(default="success", pattern="^(success|failed|conflict|acked)$")
+    status: Literal["success", "failed", "conflict", "acked"] = "success"
     apple_modified_at: datetime | None = None
     apple_list_id: str | None = None
     apple_calendar_id: str | None = None
@@ -62,6 +63,23 @@ class SyncAppleAckRequest(BaseModel):
     acks: list[SyncAppleAckItem] = Field(default_factory=list)
 
 
+class SyncBridgeDeliverySummary(BaseModel):
+    task_id: str
+    change_id: int
+    task_version: int
+    operation: str
+    status: str
+    attempt_count: int
+    retryable: bool
+    remote_id: str | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    first_pushed_at: datetime | None = None
+    last_pushed_at: datetime | None = None
+    acked_at: datetime | None = None
+    failed_at: datetime | None = None
+
+
 class SyncBridgeStateRead(BaseModel):
     bridge_id: str
     backend_cursor: str | None = None
@@ -70,6 +88,7 @@ class SyncBridgeStateRead(BaseModel):
     last_acked_change_id: int | None = None
     last_failed_change_id: int | None = None
     last_seen_change_id: int | None = None
+    pending_delivery_count: int = 0
     last_pull_started_at: datetime | None = None
     last_pull_succeeded_at: datetime | None = None
     last_push_started_at: datetime | None = None
@@ -79,5 +98,6 @@ class SyncBridgeStateRead(BaseModel):
     last_error_code: str | None = None
     last_error_message: str | None = None
     metadata: dict | None = None
+    recent_deliveries: list[SyncBridgeDeliverySummary] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

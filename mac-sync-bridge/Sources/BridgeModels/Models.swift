@@ -85,29 +85,53 @@ public struct BackendTaskRecord: Identifiable, Codable, Hashable, Sendable {
     public var title: String
     public var notes: String?
     public var dueDate: Date?
+    public var remindAt: Date?
+    public var isAllDayDue: Bool
+    public var priority: Int?
+    public var listName: String?
     public var state: SyncEntityState
     public var updatedAt: Date
     public var deletedAt: Date?
     public var versionToken: String
+    public var changeID: Int?
+    public var sourceRecordID: String?
+    public var sourceListID: String?
+    public var sourceCalendarID: String?
 
     public init(
         id: String,
         title: String,
         notes: String? = nil,
         dueDate: Date? = nil,
+        remindAt: Date? = nil,
+        isAllDayDue: Bool = false,
+        priority: Int? = nil,
+        listName: String? = nil,
         state: SyncEntityState,
         updatedAt: Date,
         deletedAt: Date? = nil,
-        versionToken: String
+        versionToken: String,
+        changeID: Int? = nil,
+        sourceRecordID: String? = nil,
+        sourceListID: String? = nil,
+        sourceCalendarID: String? = nil
     ) {
         self.id = id
         self.title = title
         self.notes = notes
         self.dueDate = dueDate
+        self.remindAt = remindAt
+        self.isAllDayDue = isAllDayDue
+        self.priority = priority
+        self.listName = listName
         self.state = state
         self.updatedAt = updatedAt
         self.deletedAt = deletedAt
         self.versionToken = versionToken
+        self.changeID = changeID
+        self.sourceRecordID = sourceRecordID
+        self.sourceListID = sourceListID
+        self.sourceCalendarID = sourceCalendarID
     }
 }
 
@@ -144,29 +168,50 @@ public struct ReminderTaskMapping: Codable, Hashable, Sendable {
 
 public struct SyncCheckpoint: Codable, Hashable, Sendable {
     public var backendCursor: String?
+    public var lastPullCursor: String?
+    public var lastPushCursor: String?
+    public var lastAckedChangeID: Int?
+    public var lastFailedChangeID: Int?
+    public var lastSeenChangeID: Int?
     public var lastSuccessfulSyncAt: Date?
     public var lastSuccessfulPullAt: Date?
     public var lastSuccessfulPushAt: Date?
     public var lastSuccessfulAckAt: Date?
     public var lastAppleScanStartedAt: Date?
     public var lastSyncStatus: String?
+    public var lastErrorCode: String?
+    public var lastErrorMessage: String?
 
     public init(
         backendCursor: String? = nil,
+        lastPullCursor: String? = nil,
+        lastPushCursor: String? = nil,
+        lastAckedChangeID: Int? = nil,
+        lastFailedChangeID: Int? = nil,
+        lastSeenChangeID: Int? = nil,
         lastSuccessfulSyncAt: Date? = nil,
         lastSuccessfulPullAt: Date? = nil,
         lastSuccessfulPushAt: Date? = nil,
         lastSuccessfulAckAt: Date? = nil,
         lastAppleScanStartedAt: Date? = nil,
-        lastSyncStatus: String? = nil
+        lastSyncStatus: String? = nil,
+        lastErrorCode: String? = nil,
+        lastErrorMessage: String? = nil
     ) {
         self.backendCursor = backendCursor
+        self.lastPullCursor = lastPullCursor
+        self.lastPushCursor = lastPushCursor
+        self.lastAckedChangeID = lastAckedChangeID
+        self.lastFailedChangeID = lastFailedChangeID
+        self.lastSeenChangeID = lastSeenChangeID
         self.lastSuccessfulSyncAt = lastSuccessfulSyncAt
         self.lastSuccessfulPullAt = lastSuccessfulPullAt
         self.lastSuccessfulPushAt = lastSuccessfulPushAt
         self.lastSuccessfulAckAt = lastSuccessfulAckAt
         self.lastAppleScanStartedAt = lastAppleScanStartedAt
         self.lastSyncStatus = lastSyncStatus
+        self.lastErrorCode = lastErrorCode
+        self.lastErrorMessage = lastErrorMessage
     }
 }
 
@@ -208,36 +253,66 @@ public struct PendingOperation: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct PullChangesRequest: Codable, Sendable {
+    public var bridgeID: String
     public var cursor: String?
     public var limit: Int
+    public var localChanges: [ApplePullChange]
 
-    public init(cursor: String? = nil, limit: Int = 200) {
+    public init(
+        bridgeID: String,
+        cursor: String? = nil,
+        limit: Int = 200,
+        localChanges: [ApplePullChange] = []
+    ) {
+        self.bridgeID = bridgeID
         self.cursor = cursor
         self.limit = limit
+        self.localChanges = localChanges
     }
 }
 
 public struct PullChangesResponse: Codable, Sendable {
+    public var accepted: Int
+    public var applied: Int
     public var changes: [BackendTaskRecord]
     public var nextCursor: String?
+    public var backendCursor: String?
     public var hasMore: Bool
 
-    public init(changes: [BackendTaskRecord], nextCursor: String?, hasMore: Bool) {
+    public init(
+        accepted: Int = 0,
+        applied: Int = 0,
+        changes: [BackendTaskRecord],
+        nextCursor: String?,
+        backendCursor: String? = nil,
+        hasMore: Bool
+    ) {
+        self.accepted = accepted
+        self.applied = applied
         self.changes = changes
         self.nextCursor = nextCursor
+        self.backendCursor = backendCursor
         self.hasMore = hasMore
     }
 }
 
-public struct PushTaskMutation: Codable, Sendable {
+public struct PushTaskMutation: Codable, Hashable, Sendable {
     public var taskID: String?
     public var reminderID: String
     public var title: String
     public var notes: String?
     public var dueDate: Date?
+    public var remindAt: Date?
+    public var isAllDayDue: Bool
+    public var priority: Int?
+    public var listName: String?
+    public var listIdentifier: String?
+    public var externalIdentifier: String?
     public var state: SyncEntityState
     public var fingerprint: ReminderFingerprint
     public var lastModifiedAt: Date
+    public var backendVersionToken: String?
+    public var backendChangeID: Int?
 
     public init(
         taskID: String? = nil,
@@ -245,30 +320,67 @@ public struct PushTaskMutation: Codable, Sendable {
         title: String,
         notes: String? = nil,
         dueDate: Date? = nil,
+        remindAt: Date? = nil,
+        isAllDayDue: Bool = false,
+        priority: Int? = nil,
+        listName: String? = nil,
+        listIdentifier: String? = nil,
+        externalIdentifier: String? = nil,
         state: SyncEntityState,
         fingerprint: ReminderFingerprint,
-        lastModifiedAt: Date
+        lastModifiedAt: Date,
+        backendVersionToken: String? = nil,
+        backendChangeID: Int? = nil
     ) {
         self.taskID = taskID
         self.reminderID = reminderID
         self.title = title
         self.notes = notes
         self.dueDate = dueDate
+        self.remindAt = remindAt
+        self.isAllDayDue = isAllDayDue
+        self.priority = priority
+        self.listName = listName
+        self.listIdentifier = listIdentifier
+        self.externalIdentifier = externalIdentifier
         self.state = state
         self.fingerprint = fingerprint
         self.lastModifiedAt = lastModifiedAt
+        self.backendVersionToken = backendVersionToken
+        self.backendChangeID = backendChangeID
     }
 }
 
 public struct PushChangesRequest: Codable, Sendable {
-    public var changes: [PushTaskMutation]
+    public var bridgeID: String
+    public var cursor: String?
+    public var tasks: [PushTaskVersion]
+    public var limit: Int
 
-    public init(changes: [PushTaskMutation]) {
-        self.changes = changes
+    public init(
+        bridgeID: String,
+        cursor: String? = nil,
+        tasks: [PushTaskVersion] = [],
+        limit: Int = 200
+    ) {
+        self.bridgeID = bridgeID
+        self.cursor = cursor
+        self.tasks = tasks
+        self.limit = limit
     }
 }
 
-public struct PushTaskResult: Codable, Sendable {
+public struct PushTaskVersion: Codable, Hashable, Sendable {
+    public var taskID: String
+    public var version: Int
+
+    public init(taskID: String, version: Int) {
+        self.taskID = taskID
+        self.version = version
+    }
+}
+
+public struct PushTaskResult: Codable, Hashable, Sendable {
     public var reminderID: String
     public var task: BackendTaskRecord
 
@@ -281,20 +393,144 @@ public struct PushTaskResult: Codable, Sendable {
 public struct PushChangesResponse: Codable, Sendable {
     public var accepted: [PushTaskResult]
     public var rejectedReminderIDs: [String]
+    public var items: [RemoteTaskEnvelope]
+    public var nextCursor: String?
+    public var hasMore: Bool
 
-    public init(accepted: [PushTaskResult], rejectedReminderIDs: [String] = []) {
+    public init(
+        accepted: [PushTaskResult],
+        rejectedReminderIDs: [String] = [],
+        items: [RemoteTaskEnvelope] = [],
+        nextCursor: String? = nil,
+        hasMore: Bool = false
+    ) {
         self.accepted = accepted
         self.rejectedReminderIDs = rejectedReminderIDs
+        self.items = items
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
     }
 }
 
 public struct AckRequest: Codable, Sendable {
-    public var taskIDs: [String]
-    public var cursor: String?
+    public var bridgeID: String
+    public var acknowledgements: [AckItem]
 
-    public init(taskIDs: [String], cursor: String? = nil) {
-        self.taskIDs = taskIDs
-        self.cursor = cursor
+    public init(bridgeID: String, acknowledgements: [AckItem]) {
+        self.bridgeID = bridgeID
+        self.acknowledgements = acknowledgements
+    }
+}
+
+public struct AckItem: Codable, Hashable, Sendable {
+    public var taskID: String
+    public var remoteID: String?
+    public var version: Int
+    public var changeID: Int?
+    public var status: String
+    public var appleModifiedAt: Date?
+    public var appleListID: String?
+    public var appleCalendarID: String?
+    public var errorCode: String?
+    public var errorMessage: String?
+    public var retryable: Bool
+
+    public init(
+        taskID: String,
+        remoteID: String? = nil,
+        version: Int,
+        changeID: Int? = nil,
+        status: String = "success",
+        appleModifiedAt: Date? = nil,
+        appleListID: String? = nil,
+        appleCalendarID: String? = nil,
+        errorCode: String? = nil,
+        errorMessage: String? = nil,
+        retryable: Bool = false
+    ) {
+        self.taskID = taskID
+        self.remoteID = remoteID
+        self.version = version
+        self.changeID = changeID
+        self.status = status
+        self.appleModifiedAt = appleModifiedAt
+        self.appleListID = appleListID
+        self.appleCalendarID = appleCalendarID
+        self.errorCode = errorCode
+        self.errorMessage = errorMessage
+        self.retryable = retryable
+    }
+}
+
+public struct ApplePullChange: Codable, Hashable, Sendable {
+    public var changeType: String
+    public var appleReminderID: String
+    public var appleListID: String?
+    public var appleCalendarID: String?
+    public var appleModifiedAt: Date?
+    public var payload: ApplePullChangePayload?
+
+    public init(
+        changeType: String,
+        appleReminderID: String,
+        appleListID: String? = nil,
+        appleCalendarID: String? = nil,
+        appleModifiedAt: Date? = nil,
+        payload: ApplePullChangePayload? = nil
+    ) {
+        self.changeType = changeType
+        self.appleReminderID = appleReminderID
+        self.appleListID = appleListID
+        self.appleCalendarID = appleCalendarID
+        self.appleModifiedAt = appleModifiedAt
+        self.payload = payload
+    }
+}
+
+public struct ApplePullChangePayload: Codable, Hashable, Sendable {
+    public var title: String
+    public var note: String?
+    public var isCompleted: Bool
+    public var dueAt: Date?
+    public var remindAt: Date?
+    public var isAllDayDue: Bool
+    public var priority: Int?
+    public var listName: String?
+
+    public init(
+        title: String,
+        note: String? = nil,
+        isCompleted: Bool = false,
+        dueAt: Date? = nil,
+        remindAt: Date? = nil,
+        isAllDayDue: Bool = false,
+        priority: Int? = nil,
+        listName: String? = nil
+    ) {
+        self.title = title
+        self.note = note
+        self.isCompleted = isCompleted
+        self.dueAt = dueAt
+        self.remindAt = remindAt
+        self.isAllDayDue = isAllDayDue
+        self.priority = priority
+        self.listName = listName
+    }
+}
+
+public struct RemoteTaskEnvelope: Codable, Hashable, Sendable {
+    public var taskID: String
+    public var version: Int
+    public var changeID: Int?
+    public var operation: String
+    public var task: BackendTaskRecord
+
+    public init(taskID: String, version: Int, changeID: Int? = nil, operation: String, task: BackendTaskRecord) {
+        self.taskID = taskID
+        self.version = version
+        self.changeID = changeID
+        self.operation = operation
+        self.task = task
     }
 }
 
@@ -369,6 +605,7 @@ public struct SyncRunReport: Sendable {
     public var ackedCount: Int
     public var conflictCount: Int
     public var queuedRetryCount: Int
+    public var consumedPendingCount: Int
 
     public init(
         startedAt: Date,
@@ -377,7 +614,8 @@ public struct SyncRunReport: Sendable {
         pushedCount: Int,
         ackedCount: Int,
         conflictCount: Int,
-        queuedRetryCount: Int
+        queuedRetryCount: Int,
+        consumedPendingCount: Int = 0
     ) {
         self.startedAt = startedAt
         self.finishedAt = finishedAt
@@ -386,5 +624,6 @@ public struct SyncRunReport: Sendable {
         self.ackedCount = ackedCount
         self.conflictCount = conflictCount
         self.queuedRetryCount = queuedRetryCount
+        self.consumedPendingCount = consumedPendingCount
     }
 }

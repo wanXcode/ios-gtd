@@ -1,15 +1,19 @@
 from uuid import UUID
 
+from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from app.models.apple_mapping import AppleReminderMapping
 from app.models.sync_bridge_state import SyncBridgeState
 from app.models.sync_delivery import SyncDelivery
 from app.models.task import Task
-from tests.test_api import TestingSessionLocal, client
 
 
-def test_ack_requires_known_delivery_when_change_id_is_explicit() -> None:
+def test_ack_requires_known_delivery_when_change_id_is_explicit(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, _ = test_context
     created = client.post("/api/tasks", json={"title": "Ack contract", "last_modified_by": "tester"}).json()
 
     push = client.post(
@@ -38,7 +42,11 @@ def test_ack_requires_known_delivery_when_change_id_is_explicit() -> None:
     assert "change_id ahead" in missing.json()["detail"]
 
 
-def test_retryable_failed_ack_keeps_delivery_ledger_and_requeues_task() -> None:
+
+def test_retryable_failed_ack_keeps_delivery_ledger_and_requeues_task(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, TestingSessionLocal = test_context
     created = client.post("/api/tasks", json={"title": "Retry me", "last_modified_by": "tester"}).json()
 
     first_push = client.post(
@@ -98,11 +106,26 @@ def test_retryable_failed_ack_keeps_delivery_ledger_and_requeues_task() -> None:
         assert delivery is not None
         assert delivery.status == "pending"
         assert delivery.attempt_count == 2
-        assert delivery.last_error_code == "timeout"
+        assert delivery.last_error_code is None
+        assert delivery.last_error_message is None
+        assert delivery.acked_at is None
         assert state.last_failed_change_id == item["change_id"]
 
+    state_response = client.get("/api/sync/apple/state/bridge-retry")
+    assert state_response.status_code == 200
+    state_payload = state_response.json()
+    assert state_payload["pending_delivery_count"] >= 1
+    assert state_payload["recent_deliveries"][0]["task_id"] == created["id"]
+    assert state_payload["recent_deliveries"][0]["change_id"] == item["change_id"]
+    assert state_payload["recent_deliveries"][0]["status"] == "pending"
+    assert state_payload["recent_deliveries"][0]["attempt_count"] == 2
 
-def test_stale_ack_by_change_id_is_ignored_after_success() -> None:
+
+
+def test_stale_ack_by_change_id_is_ignored_after_success(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, _ = test_context
     created = client.post("/api/tasks", json={"title": "Ack once", "last_modified_by": "tester"}).json()
 
     push = client.post(

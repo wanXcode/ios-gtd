@@ -1,12 +1,9 @@
 from uuid import UUID
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from app.db.session import get_db
-from app.main import app as fastapi_app
 from app.models.apple_mapping import AppleReminderMapping
 from app.models.operation_log import OperationLog
 from app.models.sync_bridge_state import SyncBridgeState
@@ -14,41 +11,15 @@ from app.models.sync_delivery import SyncDelivery
 from app.models.task import Task
 
 
-def make_test_client() -> tuple[TestClient, sessionmaker]:
-    engine = create_engine(
-        "sqlite+pysqlite:///:memory:",
-        future=True,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
-
-    from app.db.base import Base
-    import app.models  # noqa: F401
-
-    Base.metadata.create_all(bind=engine)
-
-    def override_get_db():
-        db = testing_session_local()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    fastapi_app.dependency_overrides[get_db] = override_get_db
-    return TestClient(fastapi_app), testing_session_local
-
-
-client, TestingSessionLocal = make_test_client()
-
-
-def test_health() -> None:
+def test_health(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, _ = test_context
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
 
-def test_task_lifecycle_and_operation_logs() -> None:
+def test_task_lifecycle_and_operation_logs(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, TestingSessionLocal = test_context
     created = client.post(
         "/api/tasks", json={"title": "Write deploy docs", "last_modified_by": "tester", "is_all_day_due": True}
     )
@@ -91,7 +62,8 @@ def test_task_lifecycle_and_operation_logs() -> None:
         assert "delete" in ops
 
 
-def test_batch_update_tasks() -> None:
+def test_batch_update_tasks(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, TestingSessionLocal = test_context
     first = client.post("/api/tasks", json={"title": "Task A", "last_modified_by": "tester"}).json()
     second = client.post("/api/tasks", json={"title": "Task B", "last_modified_by": "tester"}).json()
 
@@ -130,7 +102,8 @@ def test_batch_update_tasks() -> None:
         assert len(logs) >= 2
 
 
-def test_sync_pull_push_ack_flow() -> None:
+def test_sync_pull_push_ack_flow(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, TestingSessionLocal = test_context
     remote_pull = client.post(
         "/api/sync/apple/pull",
         json={
@@ -236,7 +209,8 @@ def test_sync_pull_push_ack_flow() -> None:
         assert state.last_acked_change_id >= item["change_id"]
 
 
-def test_sync_pull_delete_marks_task_deleted() -> None:
+def test_sync_pull_delete_marks_task_deleted(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, TestingSessionLocal = test_context
     created = client.post("/api/tasks", json={"title": "Delete me via apple", "last_modified_by": "tester"}).json()
     task_id = created["id"]
 
@@ -282,7 +256,8 @@ def test_sync_pull_delete_marks_task_deleted() -> None:
     assert task["deleted_at"] is not None
 
 
-def test_sync_ack_stale_version_is_ignored_and_push_cursor_filters_duplicates() -> None:
+def test_sync_ack_stale_version_is_ignored_and_push_cursor_filters_duplicates(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, TestingSessionLocal = test_context
     created = client.post("/api/tasks", json={"title": "Dedup me", "last_modified_by": "tester"}).json()
     task_id = created["id"]
 
@@ -352,7 +327,8 @@ def test_sync_ack_stale_version_is_ignored_and_push_cursor_filters_duplicates() 
     assert all(entry["task_id"] != task_id for entry in filtered_push.json()["items"])
 
 
-def test_sync_pull_conflict_path_marks_conflict_instead_of_datetime_typeerror() -> None:
+def test_sync_pull_conflict_path_marks_conflict_instead_of_datetime_typeerror(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, TestingSessionLocal = test_context
     created = client.post("/api/tasks", json={"title": "Conflict me", "last_modified_by": "tester"}).json()
     task_id = created["id"]
 
@@ -413,10 +389,13 @@ def test_sync_pull_conflict_path_marks_conflict_instead_of_datetime_typeerror() 
     assert payload["results"][0]["reason"] == "task_modified_after_last_sync"
 
 
-def test_sync_bridge_state_endpoint_returns_checkpoint_snapshot() -> None:
+def test_sync_bridge_state_endpoint_returns_checkpoint_snapshot(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, TestingSessionLocal = test_context
     response = client.get("/api/sync/apple/state/bridge-state-check")
     assert response.status_code == 200
     payload = response.json()
     assert payload["bridge_id"] == "bridge-state-check"
     assert payload["backend_cursor"] is None
     assert payload["last_acked_change_id"] is None
+    assert payload["pending_delivery_count"] == 0
+    assert payload["recent_deliveries"] == []

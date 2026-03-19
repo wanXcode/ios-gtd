@@ -173,6 +173,7 @@ These endpoints are now meant for real bridge bring-up, not just a placeholder s
   - updates `sync_deliveries` ledger so retry / failure history is inspectable per `bridge_id + task_id + change_id`
 - `GET /api/sync/apple/state/{bridge_id}`
   - returns the backend's persisted per-bridge checkpoint / cursor snapshot
+  - also exposes `pending_delivery_count` plus `recent_deliveries[]` summary for bridge cold-start inspection and retry/debug UI
 
 All sync endpoints also create `sync_runs` rows so test deployments can inspect sync activity.
 

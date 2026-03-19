@@ -1057,6 +1057,8 @@ MVP 建议先采用保守策略：
 - `conflict`：mapping 会进入 `sync_state=conflict`
 - 若 ack 的 `version` 小于 mapping 已知的 `last_synced_task_version`，后端会返回 `stale_ignored`，避免旧回执覆盖新状态
 - 若 ack 的 `version` 大于当前 `task.version`，后端会返回 HTTP 409，阻止不可能的未来版本写入
+- 若显式传入 `change_id` 但该 delivery ledger 不存在，后端会返回 HTTP 409；若该 `change_id` 已成功 ack 过，则返回 `stale_ignored`
+- 重试重新 push 同一 `change_id` 时，后端会复用同一条 delivery ledger，并清空上次失败错误细节，避免 bridge 把旧错误误认为本轮结果
 - ack 成功时会推进 `sync_bridge_states.last_acked_change_id`
 
 ### 响应示例
@@ -1111,7 +1113,9 @@ MVP 建议先采用保守策略：
   "last_pull_cursor": "c1",
   "last_push_cursor": "14",
   "last_acked_change_id": 14,
+  "last_failed_change_id": null,
   "last_seen_change_id": 14,
+  "pending_delivery_count": 1,
   "last_pull_started_at": "2026-03-19T08:00:00+00:00",
   "last_pull_succeeded_at": "2026-03-19T08:00:02+00:00",
   "last_push_started_at": "2026-03-19T08:00:03+00:00",
@@ -1119,9 +1123,33 @@ MVP 建议先采用保守策略：
   "last_ack_started_at": "2026-03-19T08:00:05+00:00",
   "last_ack_succeeded_at": "2026-03-19T08:00:05+00:00",
   "last_error_code": null,
-  "last_error_message": null
+  "last_error_message": null,
+  "recent_deliveries": [
+    {
+      "task_id": "1dbe18f0-91df-454f-b53e-5426f5ee54db",
+      "change_id": 14,
+      "task_version": 4,
+      "operation": "upsert",
+      "status": "pending",
+      "attempt_count": 2,
+      "retryable": false,
+      "remote_id": "x-apple-reminder://A1B2C3",
+      "last_error_code": null,
+      "last_error_message": null,
+      "first_pushed_at": "2026-03-19T08:00:03+00:00",
+      "last_pushed_at": "2026-03-19T08:02:03+00:00",
+      "acked_at": null,
+      "failed_at": null
+    }
+  ]
 }
 ```
+
+### 当前语义
+
+- `state` 是 bridge 冷启动/排障读接口，不会修改业务状态
+- `pending_delivery_count` 统计该 bridge 下当前仍未收敛的 delivery（`pending / retryable_failed / failed / conflict`）
+- `recent_deliveries[]` 返回最近 10 条 delivery 摘要，便于 bridge 启动时快速判断是否存在悬挂 write-back、冲突或失败重试
 
 ## 7.7 POST /sync/runs/{id}/finish
 

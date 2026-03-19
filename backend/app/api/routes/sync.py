@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -16,6 +16,7 @@ from app.schemas.sync import (
     SyncApplePullChange,
     SyncApplePullRequest,
     SyncApplePushRequest,
+    SyncBridgeDeliverySummary,
     SyncBridgeStateRead,
 )
 
@@ -122,6 +123,9 @@ def _get_or_create_delivery(
         delivery.status = "pending"
         delivery.retryable = False
         delivery.failed_at = None
+        delivery.acked_at = None
+        delivery.last_error_code = None
+        delivery.last_error_message = None
         delivery.task_version = version
         delivery.operation = operation
         delivery.remote_id = remote_id or delivery.remote_id
@@ -145,7 +149,23 @@ def _get_or_create_delivery(
     return delivery
 
 
-def _serialize_bridge_state(state: SyncBridgeState) -> SyncBridgeStateRead:
+def _serialize_bridge_state(state: SyncBridgeState, db: Session) -> SyncBridgeStateRead:
+    pending_delivery_count = db.scalar(
+        select(func.count())
+        .select_from(SyncDelivery)
+        .where(
+            SyncDelivery.bridge_id == state.bridge_id,
+            SyncDelivery.status.in_(["pending", "retryable_failed", "failed", "conflict"]),
+        )
+    )
+    deliveries = list(
+        db.scalars(
+            select(SyncDelivery)
+            .where(SyncDelivery.bridge_id == state.bridge_id)
+            .order_by(SyncDelivery.last_pushed_at.desc(), SyncDelivery.created_at.desc())
+            .limit(10)
+        ).all()
+    )
     return SyncBridgeStateRead(
         bridge_id=state.bridge_id,
         backend_cursor=state.backend_cursor,
@@ -154,6 +174,7 @@ def _serialize_bridge_state(state: SyncBridgeState) -> SyncBridgeStateRead:
         last_acked_change_id=state.last_acked_change_id,
         last_failed_change_id=state.last_failed_change_id,
         last_seen_change_id=state.last_seen_change_id,
+        pending_delivery_count=pending_delivery_count or 0,
         last_pull_started_at=state.last_pull_started_at,
         last_pull_succeeded_at=state.last_pull_succeeded_at,
         last_push_started_at=state.last_push_started_at,
@@ -163,6 +184,25 @@ def _serialize_bridge_state(state: SyncBridgeState) -> SyncBridgeStateRead:
         last_error_code=state.last_error_code,
         last_error_message=state.last_error_message,
         metadata=state.metadata_json,
+        recent_deliveries=[
+            SyncBridgeDeliverySummary(
+                task_id=delivery.task_id,
+                change_id=delivery.change_id,
+                task_version=delivery.task_version,
+                operation=delivery.operation,
+                status=delivery.status,
+                attempt_count=delivery.attempt_count,
+                retryable=delivery.retryable,
+                remote_id=delivery.remote_id,
+                last_error_code=delivery.last_error_code,
+                last_error_message=delivery.last_error_message,
+                first_pushed_at=delivery.first_pushed_at,
+                last_pushed_at=delivery.last_pushed_at,
+                acked_at=delivery.acked_at,
+                failed_at=delivery.failed_at,
+            )
+            for delivery in deliveries
+        ],
         created_at=state.created_at,
         updated_at=state.updated_at,
     )
@@ -294,7 +334,7 @@ def apple_state(bridge_id: str, db: Session = Depends(get_db)) -> SyncBridgeStat
     state = _get_or_create_bridge_state(db, bridge_id)
     db.commit()
     db.refresh(state)
-    return _serialize_bridge_state(state)
+    return _serialize_bridge_state(state, db)
 
 
 @router.post("/apple/pull")
@@ -363,7 +403,7 @@ def apple_pull(payload: SyncApplePullRequest, db: Session = Depends(get_db)) -> 
         "applied": applied,
         "conflicts": conflicts,
         "results": results,
-        "checkpoint": _serialize_bridge_state(state).model_dump(mode="json"),
+        "checkpoint": _serialize_bridge_state(state, db).model_dump(mode="json"),
     }
 
 
@@ -447,7 +487,7 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
         "cursor": payload.cursor,
         "next_cursor": next_cursor,
         "items": items,
-        "checkpoint": _serialize_bridge_state(state).model_dump(mode="json"),
+        "checkpoint": _serialize_bridge_state(state, db).model_dump(mode="json"),
     }
 
 
@@ -522,10 +562,6 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
                 SyncDelivery.change_id == ack_change_id,
             )
         )
-        if delivery is None and item.change_id is not None and mapping.last_acked_change_id != ack_change_id:
-            raise HTTPException(status_code=409, detail=f"Ack change_id not found for task: {item.task_id}")
-        if delivery and item.version != delivery.task_version:
-            raise HTTPException(status_code=409, detail=f"Ack version does not match delivered version for task: {item.task_id}")
         if delivery is None and item.change_id is not None and mapping.last_acked_change_id == ack_change_id:
             acked.append(
                 {
@@ -537,6 +573,10 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
                 }
             )
             continue
+        if delivery is None and item.change_id is not None and mapping.last_acked_change_id != ack_change_id:
+            raise HTTPException(status_code=409, detail=f"Ack change_id not found for task: {item.task_id}")
+        if delivery and item.version != delivery.task_version:
+            raise HTTPException(status_code=409, detail=f"Ack version does not match delivered version for task: {item.task_id}")
 
         if item.remote_id:
             mapping.apple_reminder_id = item.remote_id
@@ -636,5 +676,5 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
         "success": success,
         "failed": failed,
         "conflict": conflict,
-        "checkpoint": _serialize_bridge_state(state).model_dump(mode="json"),
+        "checkpoint": _serialize_bridge_state(state, db).model_dump(mode="json"),
     }
