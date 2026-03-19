@@ -53,6 +53,30 @@ v0.2.0 只解决一件事：
 
 ---
 
+## 1.4 当前用户 Apple Reminders 列表基线（精确字符串）
+
+本项目当前用户环境中的 Apple Reminders 列表名，必须按以下**精确字符串**处理，不允许擅自改名、补空格或做显示层“美化”：
+
+- `收集箱 @Inbox`
+- `下一步行动@NextAction`
+- `项目 @Project`
+- `等待@Waiting For`
+- `可能的事 @Maybe`
+
+系统内部可以继续使用稳定 bucket 语义，但在落到 Apple Reminders 时必须映射到上述精确列表名。
+
+建议内部 bucket 与 Apple 列表名映射：
+
+- `inbox` → `收集箱 @Inbox`
+- `next_action` / `next` → `下一步行动@NextAction`
+- `project` → `项目 @Project`
+- `waiting_for` / `waiting` → `等待@Waiting For`
+- `maybe` / `someday` → `可能的事 @Maybe`
+
+默认策略已由用户确认：
+
+- **不确定时 → 先放 `收集箱 @Inbox`**
+
 ## 2. 设计原则
 
 ## 2.1 宁可少建，不要错建
@@ -95,6 +119,10 @@ v0.2.0 只解决一件事：
 满足以下条件时，AI/后端可直接创建，不需要追问：
 
 ### A. 明确的单动作任务
+
+默认落类：
+- 如果动作明确、但没有清晰时间 → `收集箱 @Inbox`
+- 如果动作明确、且时间明确、且可立即执行 → `下一步行动@NextAction`
 
 特征：
 
@@ -162,6 +190,34 @@ v0.2.0 只解决一件事：
 ---
 
 ## 3.2 必须追问后再创建的输入
+
+### 当前 v0.2.0 返回合同建议
+
+当系统判断信息不足时，建议 `/api/assistant/capture` 返回至少：
+
+```json
+{
+  "draft": {
+    "intent": "create_task",
+    "summary": "下周处理合同",
+    "bucket": "inbox",
+    "confidence": 0.62,
+    "needs_confirmation": true
+  },
+  "applied": false,
+  "created": null,
+  "questions": [
+    "你说的下周，是下周一，还是下周内任意时间？"
+  ],
+  "error_code": null
+}
+```
+
+说明：
+- `draft` 是当前最优解析结果
+- `questions` 用于追问，不应让调用方自己再猜
+- `error_code` 用于输入无效/无法解析等错误场景
+
 
 满足以下情况时，系统应返回 `needs_confirmation=true`，而不是直接落库。
 
