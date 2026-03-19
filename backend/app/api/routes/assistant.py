@@ -2,14 +2,17 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.models.project import Project
+from app.models.task import Task
 from app.schemas.assistant import (
-    AssistantCaptureParsed,
+    AssistantCaptureDraft,
     AssistantCaptureRequest,
     AssistantCaptureResponse,
+    AssistantCreatedEntity,
     AssistantTodayResponse,
     AssistantWaitingResponse,
 )
-from app.services.assistant import AssistantService, serialize_parsed_capture
+from app.services.assistant import AssistantService, serialize_capture_draft
 
 router = APIRouter()
 
@@ -17,18 +20,33 @@ router = APIRouter()
 @router.post("/capture", response_model=AssistantCaptureResponse)
 def capture(payload: AssistantCaptureRequest, db: Session = Depends(get_db)) -> AssistantCaptureResponse:
     service = AssistantService(db)
-    parsed, task = service.capture_task(
+    draft, created = service.capture(
         text=payload.input,
         source=payload.context.source,
         source_ref=payload.context.source_ref,
         actor=payload.context.actor,
         timezone_name=payload.context.timezone,
-        dry_run=payload.dry_run,
+        apply=payload.apply,
     )
+
+    created_payload = None
+    if isinstance(created, Task):
+        created_payload = AssistantCreatedEntity(
+            entity_type="task",
+            task=created,
+            task_id=created.id,
+        )
+    elif isinstance(created, Project):
+        created_payload = AssistantCreatedEntity(
+            entity_type="project",
+            project=created,
+            project_id=created.id,
+        )
+
     return AssistantCaptureResponse(
-        task=task,
-        parsed=AssistantCaptureParsed(**serialize_parsed_capture(parsed)),
-        dry_run=payload.dry_run,
+        draft=AssistantCaptureDraft(**serialize_capture_draft(draft)),
+        applied=payload.apply,
+        created=created_payload,
     )
 
 

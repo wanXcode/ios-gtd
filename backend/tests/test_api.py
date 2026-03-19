@@ -9,6 +9,7 @@ from app.models.operation_log import OperationLog
 from app.models.sync_bridge_state import SyncBridgeState
 from app.models.sync_delivery import SyncDelivery
 from app.models.task import Task
+from app.services.assistant import parse_capture_input
 
 
 def test_health(test_context: tuple[TestClient, sessionmaker]) -> None:
@@ -481,3 +482,35 @@ def test_sync_bridge_state_endpoint_returns_checkpoint_snapshot(test_context: tu
     assert payload["last_acked_change_id"] is None
     assert payload["pending_delivery_count"] == 0
     assert payload["recent_deliveries"] == []
+
+
+def test_capture_api_apply_false_returns_structured_draft(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, _ = test_context
+
+    response = client.post(
+        "/api/assistant/capture",
+        json={
+            "input": "明天晚上8点提醒我给妈妈打电话",
+            "context": {"timezone": "UTC", "actor": "tester"},
+            "apply": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["created"] is None
+    assert payload["applied"] is False
+    assert payload["draft"]["intent"] == "create_task"
+    assert payload["draft"]["summary"] == "给妈妈打电话"
+    assert payload["draft"]["bucket"] == "next"
+    assert payload["draft"]["due_at"].endswith("Z")
+
+
+def test_parse_capture_input_is_deterministic_for_relative_time() -> None:
+    parsed = parse_capture_input("提醒我下周整理项目方案", timezone_name="UTC")
+
+    assert parsed.intent == "create_task"
+    assert parsed.summary == "整理项目方案"
+    assert parsed.bucket == "next"
+    assert parsed.due_at is not None
+    assert parsed.time_expression == "下周"

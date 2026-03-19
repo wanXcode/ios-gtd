@@ -1,8 +1,14 @@
 from datetime import datetime
+from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.project import ProjectRead
 from app.schemas.task import TaskRead
+
+
+AssistantIntent = Literal["create_task", "capture_inbox", "create_project"]
 
 
 class AssistantContext(BaseModel):
@@ -15,22 +21,35 @@ class AssistantContext(BaseModel):
 class AssistantCaptureRequest(BaseModel):
     input: str = Field(min_length=1, max_length=2000)
     context: AssistantContext = Field(default_factory=AssistantContext)
-    dry_run: bool = False
+    apply: bool = False
 
 
-class AssistantCaptureParsed(BaseModel):
+class AssistantCaptureDraft(BaseModel):
+    intent: AssistantIntent
     title: str
+    summary: str
+    note: str | None = None
+    bucket: str
+    status: str
     due_at: datetime | None = None
     time_expression: str | None = None
     confidence: float
-    bucket: str
-    status: str
+    project_name: str | None = None
+    project_description: str | None = None
+
+
+class AssistantCreatedEntity(BaseModel):
+    entity_type: Literal["task", "project"]
+    task: TaskRead | None = None
+    project: ProjectRead | None = None
+    task_id: UUID | None = None
+    project_id: UUID | None = None
 
 
 class AssistantCaptureResponse(BaseModel):
-    task: TaskRead | None = None
-    parsed: AssistantCaptureParsed
-    dry_run: bool
+    draft: AssistantCaptureDraft
+    applied: bool
+    created: AssistantCreatedEntity | None = None
 
 
 class AssistantTodayResponse(BaseModel):
