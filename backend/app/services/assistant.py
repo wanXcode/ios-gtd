@@ -282,7 +282,7 @@ def parse_capture_input(text: str, *, timezone_name: str = "UTC") -> CaptureDraf
         needs_confirmation = True
     if temporal["time_expression"] == "下周" and not temporal["explicit_time"]:
         needs_confirmation = True
-    if any(keyword in raw for keyword in ["找时间", "有空", "回头", "尽快"]) and temporal["due_at"] is None:
+    if any(keyword in raw for keyword in AMBIGUOUS_TIME_KEYWORDS) and temporal["due_at"] is None:
         needs_confirmation = True
 
     confidence = min(confidence, 0.96)

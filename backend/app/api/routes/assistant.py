@@ -47,6 +47,8 @@ def capture(payload: AssistantCaptureRequest, db: Session = Depends(get_db)) -> 
         draft=AssistantCaptureDraft(**serialize_capture_draft(draft)),
         applied=payload.apply,
         created=created_payload,
+        questions=draft.questions,
+        error_code=draft.error_code,
     )
 
 

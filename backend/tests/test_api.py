@@ -504,6 +504,10 @@ def test_capture_api_apply_false_returns_structured_draft(test_context: tuple[Te
     assert payload["draft"]["summary"] == "给妈妈打电话"
     assert payload["draft"]["bucket"] == "next"
     assert payload["draft"]["needs_confirmation"] is False
+    assert payload["draft"]["questions"] == []
+    assert payload["draft"]["error_code"] is None
+    assert payload["questions"] == []
+    assert payload["error_code"] is None
     assert payload["draft"]["due_at"].endswith("Z")
     assert payload["draft"]["remind_at"].endswith("Z")
 
@@ -517,3 +521,26 @@ def test_parse_capture_input_is_deterministic_for_relative_time() -> None:
     assert parsed.due_at is not None
     assert parsed.time_expression == "下周"
     assert parsed.needs_confirmation is True
+    assert parsed.questions == ["你说的下周，是下周一，还是下周内任意时间？"]
+    assert parsed.error_code == "ambiguous_time"
+
+
+def test_capture_api_returns_questions_for_ambiguous_time(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, _ = test_context
+
+    response = client.post(
+        "/api/assistant/capture",
+        json={
+            "input": "晚点提醒我看下邮箱",
+            "context": {"timezone": "UTC", "actor": "tester"},
+            "apply": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["draft"]["needs_confirmation"] is True
+    assert payload["draft"]["questions"] == ["你希望我什么时候提醒你？给我一个更具体的时间吧。"]
+    assert payload["draft"]["error_code"] == "needs_confirmation"
+    assert payload["questions"] == payload["draft"]["questions"]
+    assert payload["error_code"] == payload["draft"]["error_code"]

@@ -36,6 +36,8 @@ class AssistantCaptureDraft(BaseModel):
     time_expression: str | None = None
     confidence: float
     needs_confirmation: bool
+    questions: list[str] = Field(default_factory=list)
+    error_code: str | None = None
     project_name: str | None = None
     project_description: str | None = None
 
@@ -52,6 +54,8 @@ class AssistantCaptureResponse(BaseModel):
     draft: AssistantCaptureDraft
     applied: bool
     created: AssistantCreatedEntity | None = None
+    questions: list[str] = Field(default_factory=list)
+    error_code: str | None = None
 
 
 class AssistantTodayResponse(BaseModel):

@@ -62,6 +62,9 @@ def test_parse_project_like_text_with_time_stays_next_action() -> None:
     assert parsed.bucket == "next"
     assert parsed.due_at is not None
     assert parsed.needs_confirmation is True
+    assert parsed.error_code == "ambiguous_time"
+    assert any("项目" in question for question in parsed.questions)
+    assert any("下周" in question for question in parsed.questions)
 
 
 def test_bucket_policy_supports_aliases_and_exact_apple_list_names() -> None:
@@ -80,3 +83,14 @@ def test_parse_empty_text_returns_low_confidence_draft() -> None:
     assert parsed.summary == "Untitled task"
     assert parsed.needs_confirmation is True
     assert parsed.confidence == 0.2
+    assert parsed.error_code == "empty_title"
+    assert parsed.questions == ["你想记的具体事项是什么？"]
+
+
+def test_parse_ambiguous_time_returns_follow_up_question() -> None:
+    parsed = parse_capture_input("晚点提醒我看下邮箱", timezone_name="UTC")
+
+    assert parsed.needs_confirmation is True
+    assert parsed.due_at is None
+    assert parsed.error_code == "needs_confirmation"
+    assert parsed.questions == ["你希望我什么时候提醒你？给我一个更具体的时间吧。"]
