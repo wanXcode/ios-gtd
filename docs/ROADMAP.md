@@ -184,6 +184,25 @@ MVP 同步与管理的最小字段集：
 
 ---
 
+## 2.1 当前版本判断
+
+当前仓库版本可按 `backend/pyproject.toml` 视为：
+
+- `ios-gtd v0.1.0`
+
+v0.1.0 的实际完成度：
+- backend 基础任务域已可用
+- Apple sync bridge 基础架构已可运行
+- Apple Reminders → backend 的首轮 create push 真机闭环已打通
+- `mac-sync-bridge` 已具备 doctor / inspect / debug / once-run 能力
+
+建议后续按版本往上迭代：
+- `v0.2.0`：AI 自然语言任务入口 MVP
+- `v0.3.0`：AI → backend → Apple 反向闭环
+- `v0.4.0`：AI 任务整理、拆解、规划增强
+
+另见：`docs/AI_TASK_ENTRY_PLAN.md`
+
 ## M4：可靠性与上线准备（P1）
 
 目标：把 MVP 从“能跑”推进到“可持续跑”。
