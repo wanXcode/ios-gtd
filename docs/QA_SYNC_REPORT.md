@@ -17,7 +17,7 @@
 - **GitHub/main 与本地仓库 HEAD 一致**：当前本地 `main` 在 `5db050c`，与 `origin/main` 对齐。
 - **x2 线上 backend 已追上当前能力面**：`assistant/views/*`、`sync pull/push/ack/state` 都已在线，不再是“占位版未部署”。
 - **本地真正暴露出的回归点不在 sync 主逻辑，而在测试体系本身**：`backend/tests` 原先复用了一个全局 in-memory SQLite + 全局 TestClient，导致测试互相污染；单测单独跑是绿的，全量跑会假红。
-- **另外抓到一个小但真实的 sync 细节问题**：retryable failed 的 delivery 在下一次 push 重发时，会把上次失败的错误上下文清空，排障价值差。我已做最小修复，改为保留 `last_error_code / last_error_message`。
+- **另外抓到一个小但真实的 sync 细节问题**：retryable failed 的 delivery 在下一次 push 重发时，应该保留上次失败的错误上下文，便于 bridge 联调排障；当前代码已做最小修复，保留 `last_error_code / last_error_message`。
 
 当前更准确的状态：
 - **sync / assistant 本地主链路：通过**

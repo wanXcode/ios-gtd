@@ -1058,7 +1058,7 @@ MVP 建议先采用保守策略：
 - 若 ack 的 `version` 小于 mapping 已知的 `last_synced_task_version`，后端会返回 `stale_ignored`，避免旧回执覆盖新状态
 - 若 ack 的 `version` 大于当前 `task.version`，后端会返回 HTTP 409，阻止不可能的未来版本写入
 - 若显式传入 `change_id` 但该 delivery ledger 不存在，后端会返回 HTTP 409；若该 `change_id` 已成功 ack 过，则返回 `stale_ignored`
-- 重试重新 push 同一 `change_id` 时，后端会复用同一条 delivery ledger，并清空上次失败错误细节，避免 bridge 把旧错误误认为本轮结果
+- 重试重新 push 同一 `change_id` 时，后端会复用同一条 delivery ledger，并保留上次失败的 `last_error_code` / `last_error_message` 供诊断；只有收到新的 ack 结果时这些字段才会被更新
 - ack 成功时会推进 `sync_bridge_states.last_acked_change_id`
 
 ### 响应示例
@@ -1132,10 +1132,10 @@ MVP 建议先采用保守策略：
       "operation": "upsert",
       "status": "pending",
       "attempt_count": 2,
-      "retryable": false,
+      "retryable": true,
       "remote_id": "x-apple-reminder://A1B2C3",
-      "last_error_code": null,
-      "last_error_message": null,
+      "last_error_code": "eventkit_timeout",
+      "last_error_message": "Save reminder timeout",
       "first_pushed_at": "2026-03-19T08:00:03+00:00",
       "last_pushed_at": "2026-03-19T08:02:03+00:00",
       "acked_at": null,
