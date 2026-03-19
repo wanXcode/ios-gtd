@@ -125,6 +125,13 @@ These routes are meant for AI / chat orchestration so the model does not have to
   - turns natural language into a minimal task capture
   - supports `dry_run=true` for parse-only behavior
   - current parser is intentionally heuristic and conservative
+  - bucket policy now follows the confirmed GTD baseline:
+    - uncertain -> `inbox`
+    - explicit action + explicit time -> `next` (internal canonical bucket; Apple list maps to `下一步行动@NextAction`)
+    - waiting on others -> `waiting`
+    - maybe / someday -> `someday`
+    - explicit project -> `project`
+  - exact Apple Reminders list names are kept in a dedicated mapping layer, not hardcoded into the domain enum
 - `GET /api/assistant/views/today`
   - returns active tasks due today
   - optionally includes overdue tasks

@@ -502,7 +502,7 @@ def test_capture_api_apply_false_returns_structured_draft(test_context: tuple[Te
     assert payload["applied"] is False
     assert payload["draft"]["intent"] == "create_task"
     assert payload["draft"]["summary"] == "给妈妈打电话"
-    assert payload["draft"]["bucket"] == "inbox"
+    assert payload["draft"]["bucket"] == "next"
     assert payload["draft"]["needs_confirmation"] is False
     assert payload["draft"]["due_at"].endswith("Z")
     assert payload["draft"]["remind_at"].endswith("Z")

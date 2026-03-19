@@ -1,14 +1,17 @@
-from datetime import datetime
-
 from app.services.assistant import parse_capture_input
+from app.services.bucket_policy import (
+    apple_reminders_list_to_bucket,
+    bucket_to_apple_reminders_list,
+    canonicalize_bucket,
+)
 
 
-def test_parse_tomorrow_task_defaults_to_inbox() -> None:
+def test_parse_tomorrow_task_defaults_to_next_action() -> None:
     parsed = parse_capture_input("提醒我明天交周报", timezone_name="UTC")
 
     assert parsed.intent == "create_task"
     assert parsed.summary == "交周报"
-    assert parsed.bucket == "inbox"
+    assert parsed.bucket == "next"
     assert parsed.needs_confirmation is False
     assert parsed.due_at is not None
     assert parsed.due_at.hour == 18
@@ -36,13 +39,39 @@ def test_parse_someday_keyword_routes_to_someday_bucket() -> None:
     assert parsed.needs_confirmation is False
 
 
-def test_parse_project_like_text_routes_to_next_bucket() -> None:
+def test_parse_waiting_for_routes_to_waiting_bucket() -> None:
+    parsed = parse_capture_input("等张三回复合同", timezone_name="UTC")
+
+    assert parsed.summary == "等张三回复合同"
+    assert parsed.bucket == "waiting"
+    assert parsed.due_at is None
+
+
+def test_parse_project_intent_routes_to_project_bucket() -> None:
+    parsed = parse_capture_input("项目：Q2 产品升级", timezone_name="UTC")
+
+    assert parsed.intent == "create_project"
+    assert parsed.project_name == "Q2 产品升级"
+    assert parsed.bucket == "project"
+
+
+def test_parse_project_like_text_with_time_stays_next_action() -> None:
     parsed = parse_capture_input("下周整理项目方案", timezone_name="UTC")
 
     assert parsed.summary == "整理项目方案"
     assert parsed.bucket == "next"
     assert parsed.due_at is not None
     assert parsed.needs_confirmation is True
+
+
+def test_bucket_policy_supports_aliases_and_exact_apple_list_names() -> None:
+    assert canonicalize_bucket("next_action") == "next"
+    assert canonicalize_bucket("waiting_for") == "waiting"
+    assert canonicalize_bucket("maybe") == "someday"
+    assert bucket_to_apple_reminders_list("inbox") == "收集箱 @Inbox"
+    assert bucket_to_apple_reminders_list("next_action") == "下一步行动@NextAction"
+    assert apple_reminders_list_to_bucket("等待@Waiting For") == "waiting"
+    assert apple_reminders_list_to_bucket("可能的事 @Maybe") == "someday"
 
 
 def test_parse_empty_text_returns_low_confidence_draft() -> None:

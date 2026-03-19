@@ -10,6 +10,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import ProjectStatus, TaskBucket, TaskStatus
+from app.services.bucket_policy import canonicalize_bucket
 from app.models.operation_log import OperationLog
 from app.models.project import Project
 from app.models.task import Task
@@ -30,6 +31,8 @@ class CaptureDraft:
     time_expression: str | None
     confidence: float
     needs_confirmation: bool
+    questions: list[str]
+    error_code: str | None = None
     project_name: str | None = None
     project_description: str | None = None
 
@@ -184,6 +187,8 @@ def serialize_capture_draft(draft: CaptureDraft) -> dict:
         "time_expression": draft.time_expression,
         "confidence": draft.confidence,
         "needs_confirmation": draft.needs_confirmation,
+        "questions": draft.questions,
+        "error_code": draft.error_code,
         "project_name": draft.project_name,
         "project_description": draft.project_description,
     }
@@ -204,6 +209,17 @@ def parse_capture_input(text: str, *, timezone_name: str = "UTC") -> CaptureDraf
             bucket=TaskBucket.INBOX.value,
             status=TaskStatus.ACTIVE.value,
             needs_confirmation=True,
+            questions=_build_follow_up_questions(
+                raw,
+                normalized="Untitled task",
+                intent="create_task",
+                bucket=TaskBucket.INBOX.value,
+                time_expression=None,
+                due_at=None,
+                explicit_time=False,
+                project_name=None,
+            ),
+            error_code="empty_title",
         )
 
     tz = ZoneInfo(timezone_name)
@@ -231,11 +247,23 @@ def parse_capture_input(text: str, *, timezone_name: str = "UTC") -> CaptureDraf
             time_expression=temporal["time_expression"],
             confidence=0.83 if project_name != raw else 0.68,
             needs_confirmation=project_name == raw,
+            questions=_build_follow_up_questions(
+                raw,
+                normalized=project_name,
+                intent=intent,
+                bucket=TaskBucket.PROJECT.value,
+                time_expression=temporal["time_expression"],
+                due_at=None,
+                explicit_time=temporal["explicit_time"],
+                project_name=project_name,
+            ),
+            error_code="ambiguous_project_scope" if project_name == raw else None,
             project_name=project_name,
             project_description=None,
         )
 
-    bucket = _infer_bucket(raw, normalized)
+    bucket = _infer_bucket(raw, normalized, temporal_has_due=temporal["due_at"] is not None)
+    bucket = canonicalize_bucket(bucket)
     if intent == "capture_inbox" and bucket != TaskBucket.INBOX.value:
         intent = "create_task"
 
@@ -261,6 +289,24 @@ def parse_capture_input(text: str, *, timezone_name: str = "UTC") -> CaptureDraf
     if needs_confirmation:
         confidence = min(confidence, 0.78)
 
+    questions = _build_follow_up_questions(
+        raw,
+        normalized=normalized,
+        intent="create_task",
+        bucket=bucket,
+        time_expression=temporal["time_expression"],
+        due_at=temporal["due_at"],
+        explicit_time=temporal["explicit_time"],
+        project_name=None,
+    )
+    error_code = _infer_error_code(
+        normalized=normalized,
+        needs_confirmation=needs_confirmation,
+        time_expression=temporal["time_expression"],
+        due_at=temporal["due_at"],
+        questions=questions,
+    )
+
     return CaptureDraft(
         intent="create_task",
         title=normalized,
@@ -273,7 +319,62 @@ def parse_capture_input(text: str, *, timezone_name: str = "UTC") -> CaptureDraf
         time_expression=temporal["time_expression"],
         confidence=confidence,
         needs_confirmation=needs_confirmation,
+        questions=questions,
+        error_code=error_code,
     )
+
+
+
+
+AMBIGUOUS_TIME_KEYWORDS = ("找时间", "有空", "回头", "尽快", "晚点", "周末")
+PROJECT_SCOPE_KEYWORDS = ("项目", "project", "方案", "计划", "里程碑", "拆分", "需求")
+
+
+def _build_follow_up_questions(
+    raw: str,
+    *,
+    normalized: str,
+    intent: AssistantIntent,
+    bucket: str,
+    time_expression: str | None,
+    due_at: datetime | None,
+    explicit_time: bool,
+    project_name: str | None,
+) -> list[str]:
+    questions: list[str] = []
+    if normalized == "Untitled task":
+        questions.append("你想记的具体事项是什么？")
+
+    if intent == "create_project" and project_name and project_name == raw.strip():
+        questions.append("这是要建成项目，还是先记成一条任务？")
+    elif bucket == TaskBucket.NEXT.value and any(keyword in raw for keyword in PROJECT_SCOPE_KEYWORDS):
+        questions.append("这更像一个项目目标；你是想建项目，还是先记成一条下一步任务？")
+
+    if time_expression == "下周" and not explicit_time:
+        questions.append("你说的下周，是下周一，还是下周内任意时间？")
+    elif "周末" in raw and due_at is None:
+        questions.append("你说的周末，是周六还是周日？大概几点提醒你？")
+    elif any(keyword in raw for keyword in AMBIGUOUS_TIME_KEYWORDS) and due_at is None:
+        questions.append("你希望我什么时候提醒你？给我一个更具体的时间吧。")
+
+    return questions
+
+
+def _infer_error_code(
+    *,
+    normalized: str,
+    needs_confirmation: bool,
+    time_expression: str | None,
+    due_at: datetime | None,
+    questions: list[str],
+) -> str | None:
+    if normalized == "Untitled task":
+        return "empty_title"
+    if time_expression == "下周" and due_at is not None:
+        return "ambiguous_time"
+    if needs_confirmation and questions:
+        return "needs_confirmation"
+    return None
 
 
 def _detect_intent(text: str) -> AssistantIntent:
@@ -321,12 +422,28 @@ def _extract_project_name(text: str) -> str:
     return candidate or text.strip()
 
 
-def _infer_bucket(raw: str, normalized: str) -> str:
+def _infer_bucket(raw: str, normalized: str, *, temporal_has_due: bool) -> str:
     combined = f"{raw} {normalized}"
-    if any(keyword in combined for keyword in ["以后再说", "晚点再说", "回头再说", "有空再说"]):
-        return TaskBucket.SOMEDAY.value
+
+    if any(keyword in combined for keyword in ["等", "等待", "等着", "等下", "等他", "等她", "等对方", "等客户", "等法务", "等回复", "等确认", "等待回复", "等待确认"]):
+        if any(keyword in combined for keyword in ["回复", "确认", "批准", "审批", "消息", "结果", "邮件", "合同", "条款"]):
+            return "waiting_for"
+
+    if any(keyword in combined for keyword in ["以后再说", "晚点再说", "回头再说", "有空再说", "不急", "先放着", "之后再看", "改天再看"]):
+        return "maybe"
+
+    if any(keyword in raw for keyword in ["建项目", "创建项目", "新建项目", "这是个项目"]) or normalized.startswith(("项目 ", "项目:", "项目：", "project ", "project:")):
+        return TaskBucket.PROJECT.value
+
+    if temporal_has_due:
+        return "next_action"
+
+    if any(keyword in combined for keyword in ["提醒我", "发", "打电话", "联系", "提交", "处理", "确认", "跟进", "安排", "发送", "回复", "回电话"]):
+        return TaskBucket.INBOX.value
+
     if any(keyword in combined for keyword in ["项目", "project", "方案", "计划", "里程碑", "拆分", "需求"]):
-        return TaskBucket.NEXT.value
+        return TaskBucket.PROJECT.value
+
     return TaskBucket.INBOX.value
 
 
