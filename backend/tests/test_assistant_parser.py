@@ -65,6 +65,7 @@ def test_parse_project_like_text_with_time_stays_next_action() -> None:
     assert parsed.error_code == "ambiguous_time"
     assert any("项目" in question for question in parsed.questions)
     assert any("下周" in question for question in parsed.questions)
+<<<<<<< HEAD
 
 
 def test_bucket_policy_supports_aliases_and_exact_apple_list_names() -> None:
@@ -75,6 +76,8 @@ def test_bucket_policy_supports_aliases_and_exact_apple_list_names() -> None:
     assert bucket_to_apple_reminders_list("next_action") == "下一步行动@NextAction"
     assert apple_reminders_list_to_bucket("等待@Waiting For") == "waiting"
     assert apple_reminders_list_to_bucket("可能的事 @Maybe") == "someday"
+=======
+>>>>>>> 72b14cf (feat(backend): add capture follow-up questions)
 
 
 def test_bucket_policy_supports_aliases_and_exact_apple_list_names() -> None:
