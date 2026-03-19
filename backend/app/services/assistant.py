@@ -208,7 +208,6 @@ def parse_capture_input(text: str, *, timezone_name: str = "UTC") -> CaptureDraf
 
     tz = ZoneInfo(timezone_name)
     now = datetime.now(tz)
-
     initial_intent = _detect_intent(raw)
     temporal = _extract_temporal_info(raw, tz=tz, now=now)
     stripped_text = _strip_command_prefix(temporal["summary"])
@@ -281,7 +280,7 @@ def _detect_intent(text: str) -> AssistantIntent:
     lowered = text.lower().strip()
     if text.startswith(("建项目", "创建项目", "新建项目", "项目：", "项目:")) or lowered.startswith(("project:", "create project ")):
         return "create_project"
-    if text.startswith(("提醒我", "帮我记", "记得", "待办", "todo:", "todo：", "需要")):
+    if "提醒我" in text or "帮我记" in text or text.startswith(("记得", "待办", "todo:", "todo：", "需要")):
         return "create_task"
     return "capture_inbox"
 
