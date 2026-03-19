@@ -7,3 +7,4 @@
 - `bridge-cli sync-once`
 - `bridge-cli doctor`
 - `bridge-cli print-config`
+- `bridge-cli inspect-reminders`

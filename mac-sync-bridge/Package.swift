@@ -46,7 +46,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "BridgeCLI",
-            dependencies: ["BridgeRuntime"]
+            dependencies: ["BridgeModels", "BridgeRuntime"]
         ),
         .executableTarget(
             name: "BridgeApp",

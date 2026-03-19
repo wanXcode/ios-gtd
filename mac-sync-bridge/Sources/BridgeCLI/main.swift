@@ -1,3 +1,4 @@
+import BridgeModels
 import BridgeRuntime
 import Foundation
 
@@ -16,6 +17,8 @@ struct BridgeCLIApp {
                 try await runDoctor(configuration: configuration)
             case "list-lists":
                 try await runListLists(configuration: configuration)
+            case "inspect-reminders":
+                try await runInspectReminders(configuration: configuration)
             case "sync-once", "run":
                 try await runSyncOnce(configuration: configuration)
             case "print-config":
@@ -67,6 +70,51 @@ struct BridgeCLIApp {
         let runtime = try await BridgeRuntimeConfigurationLoader().makeRuntime(configuration: configuration)
         let report = try await runtime.coordinator.runSync(direction: .bidirectional)
         print("sync finished bridge_id=\(configuration.bridgeID) pulled=\(report.pulledCount) pushed=\(report.pushedCount) acked=\(report.ackedCount) conflicts=\(report.conflictCount) retries=\(report.queuedRetryCount) pending_consumed=\(report.consumedPendingCount)")
+    }
+
+    private static func runInspectReminders(configuration: BridgeRuntimeConfiguration) async throws {
+        let runtime = try await BridgeRuntimeConfigurationLoader().makeRuntime(configuration: configuration)
+        let authorization = try await runtime.reminderStore.authorizationStatus()
+        print("authorization=\(authorization.rawValue)")
+        let reminders = try await runtime.reminderStore.fetchReminders()
+        print("count=\(reminders.count)")
+        for reminder in reminders.sorted(by: reminderSortKey) {
+            print(format(reminder: reminder))
+        }
+    }
+
+    private static func reminderSortKey(_ lhs: ReminderRecord, _ rhs: ReminderRecord) -> Bool {
+        let lhsList = lhs.listIdentifier ?? ""
+        let rhsList = rhs.listIdentifier ?? ""
+        if lhsList != rhsList { return lhsList < rhsList }
+        if lhs.title != rhs.title { return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending }
+        return lhs.id < rhs.id
+    }
+
+    private static func format(reminder: ReminderRecord) -> String {
+        [
+            "id=\(shellEscaped(reminder.id))",
+            "externalIdentifier=\(shellEscaped(reminder.externalIdentifier))",
+            "title=\(shellEscaped(reminder.title))",
+            "listIdentifier=\(shellEscaped(reminder.listIdentifier ?? \"<none>\"))",
+            "isCompleted=\(reminder.isCompleted)",
+            "isDeleted=\(reminder.isDeleted)",
+            "lastModifiedAt=\(iso8601String(from: reminder.lastModifiedAt))"
+        ].joined(separator: " ")
+    }
+
+    private static func iso8601String(from date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private static func shellEscaped(_ value: String) -> String {
+        guard !value.isEmpty else { return "\"\"" }
+        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        return "\"\(escaped)\""
     }
 
     private static func printConfig(configuration: BridgeRuntimeConfiguration) throws {
