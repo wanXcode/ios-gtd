@@ -8,6 +8,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "bridge-cli", targets: ["BridgeCLI"]),
+        .library(name: "BridgeModels", targets: ["BridgeModels"]),
         .library(name: "BridgeCore", targets: ["BridgeCore"]),
         .library(name: "EventKitAdapter", targets: ["EventKitAdapter"]),
         .library(name: "HTTPClient", targets: ["HTTPClient"]),
@@ -19,20 +20,24 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "BridgeModels",
+            dependencies: []
+        ),
+        .target(
             name: "BridgeCore",
-            dependencies: ["HTTPClient", "Persistence", "EventKitAdapter"]
+            dependencies: ["BridgeModels", "HTTPClient", "Persistence", "EventKitAdapter"]
         ),
         .target(
             name: "EventKitAdapter",
-            dependencies: []
+            dependencies: ["BridgeModels"]
         ),
         .target(
             name: "HTTPClient",
-            dependencies: []
+            dependencies: ["BridgeModels"]
         ),
         .target(
             name: "Persistence",
-            dependencies: []
+            dependencies: ["BridgeModels"]
         ),
         .executableTarget(
             name: "BridgeCLI",

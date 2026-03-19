@@ -900,6 +900,31 @@ MVP 可在 README 中提前声明：
 4. `SyncCoordinator` 单轮串行同步
 5. 指纹比对 + mapping 落地
 
+### 16.1.1 当前仓库内已落地的 scaffold（2026-03）
+
+`mac-sync-bridge/` 当前已经不是纯 README 骨架，已补到可编译的结构化 scaffold：
+
+- `BridgeModels/Models.swift`
+  - 已定义 `ReminderRecord`、`BackendTaskRecord`、`ReminderTaskMapping`
+  - 已定义 `SyncCheckpoint`、`PendingOperation`、`PushTaskMutation`、`SyncPlan`、`SyncRunReport`
+- `BridgeCore/Protocols.swift`
+  - 已定义 `ConflictResolving`、`RetryScheduling`、`DateProviding`
+  - 已定义 `SyncCoordinatorDependencies`
+- `BridgeCore/SyncCoordinator.swift`
+  - 已提供单轮同步主流程：load checkpoint → pull → plan → apply local → push → ack → persist checkpoint / mapping / retry queue
+- `EventKitAdapter/ReminderStore.swift`
+  - 已定义 `ReminderStore` 协议与 `InMemoryReminderStore`
+- `HTTPClient/BackendSyncClient.swift`
+  - 已定义 `BackendSyncClient` 协议与 `InMemoryBackendSyncClient`
+- `Persistence/BridgeStateStore.swift`
+  - 已定义 `BridgeStateStore` 协议、`BridgeConfiguration` 与 `InMemoryBridgeStateStore`
+- `BridgeCLI/main.swift`
+  - 已支持 `doctor` / `sync-once` / `run` / `print-config`
+- `Tests/BridgeCoreTests/SyncCoordinatorTests.swift`
+  - 已覆盖最小 push / pull 主链路测试
+
+也就是说，下一阶段重点已经可以从“先搭骨架”切到“把 fake/in-memory 实现替换成真实 EventKit / URLSession / SQLite 实现”。
+
 ## 16.2 第二批补齐
 
 1. Reminder 写回

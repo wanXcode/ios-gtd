@@ -6,7 +6,14 @@ Mac Sync Bridge 是 GTD 系统的本地同步代理，负责在：
 
 之间执行双向同步。
 
-当前目录先提供**工程骨架与模块边界**，目的是让后续实现可以直接接着写，而不是已经完成可运行版本。
+当前目录已经从“纯 README 骨架”推进到“可编译 scaffold”：
+- SwiftPM target 已可 build
+- 核心领域模型、协议、协调器骨架已落地
+- 提供 in-memory `ReminderStore` / `BackendSyncClient` / `BridgeStateStore`
+- CLI 可跑 `doctor` / `sync-once` / `print-config`
+- `BridgeCoreTests` 已覆盖最小 push / pull 主链路
+
+它还不是可接真实 EventKit / 真实 HTTP / 真实 SQLite 的完成版，但模块边界、流程入口、状态载体已经更清楚，后续可以直接往真实实现替换。
 
 ## 目标
 
@@ -18,91 +25,151 @@ Mac Sync Bridge 是 GTD 系统的本地同步代理，负责在：
 详细设计见：
 - `../docs/SYNC_BRIDGE_SPEC.md`
 
-## 建议模块结构
+## 当前代码结构
 
 ```text
 mac-sync-bridge/
   Package.swift
   README.md
   Sources/
-    BridgeApp/          # 宿主入口（后续可接 LaunchAgent / menu bar app）
-    BridgeCLI/          # 命令行入口，便于本地调试与单次同步
-    BridgeCore/         # 同步状态机、协调器、冲突处理、调度
-    EventKitAdapter/    # EventKit 读写封装
-    HTTPClient/         # GTD Backend API 客户端
-    Persistence/        # SQLite / 配置 / checkpoint / mapping 存储
+    BridgeApp/
+      main.swift
+      README.md
+    BridgeCLI/
+      main.swift
+      README.md
+    BridgeModels/
+      Models.swift
+    BridgeCore/
+      Protocols.swift
+      SyncCoordinator.swift
+      README.md
+    EventKitAdapter/
+      ReminderStore.swift
+      README.md
+    HTTPClient/
+      BackendSyncClient.swift
+      README.md
+    Persistence/
+      BridgeStateStore.swift
+      README.md
   Tests/
     BridgeCoreTests/
+      SyncCoordinatorTests.swift
+      README.md
 ```
 
-## 模块职责
+## 已落地的核心模块
+
+### BridgeModels
+当前已经有共享领域模型：
+- `ReminderRecord`
+- `BackendTaskRecord`
+- `ReminderTaskMapping`
+- `SyncCheckpoint`
+- `PendingOperation`
+- `PushTaskMutation`
+- `SyncPlan`
+- `SyncRunReport`
+
+这样 `EventKitAdapter` / `HTTPClient` / `Persistence` 不需要反向依赖 `BridgeCore`，避免模块循环。
 
 ### BridgeCore
-核心同步流程：
+当前已经有：
+- `ConflictResolving` / `RetryScheduling` / `DateProviding`
 - `SyncCoordinator`
-- `PullPlanner`
-- `PushPlanner`
-- `ConflictResolver`
-- `RetryScheduler`
+
+当前 `SyncCoordinator` 已具备的主流程：
+1. 读取 checkpoint / mapping / reminders
+2. 从 backend `pullChanges`
+3. 构建 sync plan
+4. 应用本地 upsert / delete
+5. 将本地变更 `pushChanges`
+6. 持久化 mapping
+7. 执行 `ackChanges`
+8. 更新 checkpoint
+9. 对 rejected mutation 进入 pending queue
 
 ### EventKitAdapter
-负责：
-- EventKit 授权
-- Reminder 列表读取
-- Reminder 写回
-- Apple 对象标准化
+当前还是替身实现：
+- `ReminderStore` 协议
+- `ReminderAuthorizationStatus`
+- `InMemoryReminderStore`
+
+这让 `BridgeCore` 可以在不接真实 EventKit 的情况下先测试同步主链路。
 
 ### HTTPClient
-负责：
-- `/api/sync/apple/pull`
-- `/api/sync/apple/push`
-- `/api/sync/apple/ack`
-- token、超时、重试、错误解析
+当前还是替身实现：
+- `BackendSyncClient` 协议
+- `BackendClientConfiguration`
+- `InMemoryBackendSyncClient`
+
+后续替换成真实 URLSession 客户端时，尽量保持协议不变。
 
 ### Persistence
-负责：
-- `BridgeConfig`
-- `LocalCheckpoint`
-- `ReminderTaskMapping`
-- `PendingOperation`
+当前还是替身实现：
+- `BridgeConfiguration`
+- `BridgeStateStore` 协议
+- `InMemoryBridgeStateStore`
+
+后续可把这个 actor 替换为 SQLite / GRDB 实现，不影响 `BridgeCore` 的调度逻辑。
 
 ### BridgeCLI
-用于本地开发阶段：
-- `run`
-- `sync-once`
-- `doctor`
-- `print-config`
+当前支持：
+- `bridge-cli doctor`
+- `bridge-cli sync-once`
+- `bridge-cli run`
+- `bridge-cli print-config`
 
-### BridgeApp
-后续可演进为：
-- LaunchAgent 宿主
-- 菜单栏壳
-- 状态提示 / 最近错误展示
+目前命令使用内建 fixture 依赖，主要用于验证结构与流程，不代表最终配置加载方式。
 
-## EventKit 与 macOS 限制
+## 本地验证
 
-这是本项目的基础约束：
+在 `mac-sync-bridge/` 目录下：
 
-1. 只能运行在 macOS
-2. 依赖用户授予 Reminders 权限
-3. 依赖本机 Apple 账户 / iCloud Reminders 数据可用
-4. Reminder 增量变化不能完全依赖系统推送，MVP 采用轮询 + 指纹比对
-5. 删除检测与全天任务语义需要额外谨慎处理
+```bash
+swift build
+swift test
+swift run bridge-cli doctor
+swift run bridge-cli sync-once
+```
 
-## 开发建议
+## 下一步最值得做的事
 
-优先做最小闭环：
+1. **接真实 EventKit**
+   - `EKEventStore` 授权
+   - reminder 查询
+   - reminder save/delete
+   - 标准 DTO 与 EventKit 对象双向转换
 
-1. CLI 跑通配置加载
-2. EventKit 只读 reminders
-3. HTTP pull/push/ack 打通
-4. 本地 checkpoint + mapping 落地
-5. 单轮同步跑通
+2. **接真实 HTTP 客户端**
+   - URLSession
+   - `/api/sync/apple/pull`
+   - `/api/sync/apple/push`
+   - `/api/sync/apple/ack`
+   - token / timeout / retry / error mapping
 
-## 后续可直接补的内容
+3. **接真实 Persistence**
+   - GRDB 或 SQLite
+   - config/checkpoint/mappings/pending_operations 表
+   - migration
 
-- `Package.swift` 中加入 SQLite 依赖（如 GRDB）
-- 建立 `BridgeCore` 的协议层与模型层
-- 先写 fake EventKit / fake backend 测试
-- 再逐步接真实 EventKit
+4. **把计划逻辑拆细**
+   - Pull planner / Push planner / Conflict resolver 单独类型化
+   - 删除墓碑策略
+   - 字段级 merge
 
+5. **补端到端 contract**
+   - 和 backend 同步接口字段完全对齐
+   - 明确 `versionToken` / `change_id` / cursor 语义
+
+## 当前刻意没做的部分
+
+这些仍然是空白或半成品：
+- 真实 EventKit 读写
+- 真实 URLSession 网络调用
+- SQLite 落盘
+- LaunchAgent / 菜单栏宿主
+- 完整删除墓碑恢复策略
+- 全天任务 / 时区语义精确处理
+- 更细粒度冲突日志与人工处理入口
