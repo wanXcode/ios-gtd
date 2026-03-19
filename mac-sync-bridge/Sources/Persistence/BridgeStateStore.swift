@@ -161,8 +161,8 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
         databaseURL: URL,
         defaultConfiguration: BridgeConfiguration,
         schemaDefinition: SQLiteSchemaDefinition = .init(),
-        jsonEncoder: JSONEncoder = SQLiteBridgeStateStore.makeDefaultEncoder(),
-        jsonDecoder: JSONDecoder = SQLiteBridgeStateStore.makeDefaultDecoder()
+        jsonEncoder: JSONEncoder = SQLiteBridgeStateStore.defaultJSONEncoder(),
+        jsonDecoder: JSONDecoder = SQLiteBridgeStateStore.defaultJSONDecoder()
     ) async throws {
         self.databaseURL = databaseURL
         self.schemaDefinition = schemaDefinition
@@ -281,7 +281,7 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
 
     public func saveCheckpoint(_ checkpoint: SyncCheckpoint) async throws {
         try withDatabase { database in
-            let now = Self.iso8601String(from: Date())
+            let now = Self.iso8601String(from: Date()) ?? ""
             let sql = """
             INSERT INTO sync_checkpoint (
                 id,
@@ -425,7 +425,7 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
                 statement.bind(text: mapping.reminderFingerprint.value, at: 5)
                 statement.bind(text: mapping.backendVersionToken, at: 6)
                 statement.bind(text: mapping.syncState.rawValue, at: 7)
-                statement.bind(text: Self.iso8601String(from: mapping.syncedAt), at: 8)
+                statement.bind(text: Self.iso8601String(from: mapping.syncedAt) ?? "", at: 8)
                 try statement.runToCompletion()
             }
 
@@ -543,7 +543,7 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
                 let insertStatement = try database.prepare(sql: insertSQL)
                 defer { insertStatement.finalize() }
                 insertStatement.bind(int64: Int64(schemaDefinition.currentVersion), at: 1)
-                insertStatement.bind(text: Self.iso8601String(from: Date()), at: 2)
+                insertStatement.bind(text: Self.iso8601String(from: Date()) ?? "", at: 2)
                 try insertStatement.runToCompletion()
             }
         }
@@ -561,7 +561,7 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
             let count = checkStatement.step() == .row ? checkStatement.int64(at: 0) : 0
             guard count == 0 else { return }
 
-            let now = Self.iso8601String(from: Date())
+            let now = Self.iso8601String(from: Date()) ?? ""
             let insert = try database.prepare(sql: "INSERT INTO bridge_configuration (id, backend_base_url, api_token, sync_interval_seconds, default_reminder_list_identifier, updated_at) VALUES (1, ?, ?, ?, ?, ?);")
             defer { insert.finalize() }
             insert.bind(text: configuration.backendBaseURL.absoluteString, at: 1)
@@ -661,13 +661,13 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
         return try body(database)
     }
 
-    static func makeDefaultEncoder() -> JSONEncoder {
+    public static func defaultJSONEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }
 
-    static func makeDefaultDecoder() -> JSONDecoder {
+    public static func defaultJSONDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder

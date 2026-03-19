@@ -23,8 +23,8 @@ public struct BackendClientConfiguration: Sendable {
         apiToken: String? = nil,
         timeout: TimeInterval = 30,
         additionalHeaders: [String: String] = [:],
-        jsonEncoder: JSONEncoder = BackendClientConfiguration.makeDefaultEncoder(),
-        jsonDecoder: JSONDecoder = BackendClientConfiguration.makeDefaultDecoder()
+        jsonEncoder: JSONEncoder = BackendClientConfiguration.defaultJSONEncoder(),
+        jsonDecoder: JSONDecoder = BackendClientConfiguration.defaultJSONDecoder()
     ) {
         self.baseURL = baseURL
         self.apiToken = apiToken
@@ -34,14 +34,14 @@ public struct BackendClientConfiguration: Sendable {
         self.jsonDecoder = jsonDecoder
     }
 
-    static func makeDefaultEncoder() -> JSONEncoder {
+    public static func defaultJSONEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.keyEncodingStrategy = .convertToSnakeCase
         return encoder
     }
 
-    static func makeDefaultDecoder() -> JSONDecoder {
+    public static func defaultJSONDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         decoder.keyDecodingStrategy = .convertFromSnakeCase
