@@ -15,12 +15,12 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
             request: PullChangesRequest(
                 bridgeID: "bridge-contract",
                 cursor: "cursor-41",
-                localChanges: [],
-                limit: 50
+                limit: 50,
+                localChanges: []
             )
         )
 
-        let request = try XCTUnwrap(await session.lastRequest)
+        let request = try XCTUnwrap(await session.getLastRequest())
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.url?.path, "/api/sync/apple/pull")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
@@ -39,7 +39,10 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
         XCTAssertFalse(response.hasMore)
         XCTAssertEqual(response.changes.count, 1)
 
-        let task = try XCTUnwrap(response.changes.first)
+        guard let task = response.changes.first else {
+            XCTFail("Expected first change")
+            return
+        }
         XCTAssertEqual(task.id, "task-backend-1")
         XCTAssertEqual(task.title, "Remote Inbox Task")
         XCTAssertEqual(task.notes, "Pulled from backend")
@@ -47,7 +50,7 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
         XCTAssertEqual(task.versionToken, "v7")
         XCTAssertEqual(task.changeID, 42)
         XCTAssertEqual(task.sourceRecordID, "reminder-ext-1")
-        XCTAssertEqual(task.state, .active)
+        XCTAssertEqual(task.state, SyncEntityState.active)
     }
 
     func testPushChangesDecodesBackendContractFixture() async throws {
@@ -59,24 +62,13 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
                 bridgeID: "bridge-contract",
                 cursor: "push-cursor-1",
                 tasks: [
-                    PushTaskMutation(
-                        taskID: "task-backend-1",
-                        reminderID: "reminder-local-1",
-                        title: "Local title",
-                        notes: "Changed locally",
-                        dueDate: Date(timeIntervalSince1970: 1_710_000_000),
-                        state: .completed,
-                        listIdentifier: "list-inbox",
-                        fingerprint: ReminderFingerprint(value: "fp-local-1"),
-                        lastModifiedAt: Date(timeIntervalSince1970: 1_710_000_100),
-                        backendVersionToken: "v7"
-                    )
+                    PushTaskVersion(taskID: "task-backend-1", version: 8)
                 ],
                 limit: 20
             )
         )
 
-        let request = try XCTUnwrap(await session.lastRequest)
+        let request = try XCTUnwrap(await session.getLastRequest())
         XCTAssertEqual(request.url?.path, "/api/sync/apple/push")
 
         let requestBody = try XCTUnwrap(request.httpBody)
@@ -90,16 +82,22 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
         XCTAssertEqual(response.nextCursor, "cursor-push-9")
         XCTAssertFalse(response.hasMore)
 
-        let item = try XCTUnwrap(response.items.first)
+        guard let item = response.items.first else {
+            XCTFail("Expected first item")
+            return
+        }
         XCTAssertEqual(item.taskID, "task-backend-1")
         XCTAssertEqual(item.version, 8)
         XCTAssertEqual(item.changeID, 43)
         XCTAssertEqual(item.operation, "upsert")
-        XCTAssertEqual(item.task.state, .completed)
+        XCTAssertEqual(item.task.state, SyncEntityState.completed)
         XCTAssertEqual(item.task.versionToken, "v8")
         XCTAssertEqual(item.task.sourceRecordID, "reminder-local-1")
 
-        let accepted = try XCTUnwrap(response.accepted.first)
+        guard let accepted = response.accepted.first else {
+            XCTFail("Expected first accepted result")
+            return
+        }
         XCTAssertEqual(accepted.reminderID, "reminder-local-1")
         XCTAssertEqual(accepted.task.id, "task-backend-1")
     }
@@ -112,12 +110,12 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
             request: AckRequest(
                 bridgeID: "bridge-contract",
                 acknowledgements: [
-                    AckItem(taskID: "task-backend-1", version: 8, status: .applied, changeID: 43)
+                    AckItem(taskID: "task-backend-1", version: 8, changeID: 43, status: "applied")
                 ]
             )
         )
 
-        let request = try XCTUnwrap(await session.lastRequest)
+        let request = try XCTUnwrap(await session.getLastRequest())
         XCTAssertEqual(request.url?.path, "/api/sync/apple/ack")
         let requestBody = try XCTUnwrap(request.httpBody)
         let payload = try JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
@@ -135,7 +133,7 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
 
         do {
             _ = try await client.pullChanges(
-                request: PullChangesRequest(bridgeID: "bridge-contract", cursor: nil, localChanges: [], limit: 10)
+                request: PullChangesRequest(bridgeID: "bridge-contract", cursor: nil, limit: 10, localChanges: [])
             )
             XCTFail("Expected unexpectedStatusCode error")
         } catch let error as BackendClientError {
@@ -154,7 +152,7 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
 
         do {
             _ = try await client.pullChanges(
-                request: PullChangesRequest(bridgeID: "bridge-contract", cursor: nil, localChanges: [], limit: 10)
+                request: PullChangesRequest(bridgeID: "bridge-contract", cursor: nil, limit: 10, localChanges: [])
             )
             XCTFail("Expected decodingFailed error")
         } catch let error as BackendClientError {
@@ -180,7 +178,7 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
 private actor StubURLSession: URLSessioning {
     let response: HTTPURLResponse
     let data: Data
-    private(set) var lastRequest: URLRequest?
+    private var lastRequest: URLRequest?
 
     init(response: HTTPURLResponse, data: Data) {
         self.response = response
@@ -190,6 +188,10 @@ private actor StubURLSession: URLSessioning {
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         lastRequest = request
         return (data, response)
+    }
+
+    func getLastRequest() -> URLRequest? {
+        lastRequest
     }
 }
 

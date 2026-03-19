@@ -111,16 +111,20 @@ private actor RecordingLogger: BridgeRuntimeLogging {
     }
 }
 
-private actor IncrementingDateProvider: DateProviding {
+private final class IncrementingDateProvider: DateProviding, @unchecked Sendable {
     private var current: Date
+    private let lock = NSLock()
 
     init(start: Date) {
         self.current = start
     }
 
     func now() -> Date {
-        defer { current = current.addingTimeInterval(1) }
-        return current
+        lock.lock()
+        defer { lock.unlock() }
+        let value = current
+        current = current.addingTimeInterval(1)
+        return value
     }
 }
 
