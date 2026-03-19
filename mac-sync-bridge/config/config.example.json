@@ -1,0 +1,14 @@
+{
+  "bridgeID": "mbp-14-sync-bridge",
+  "backendBaseURL": "http://127.0.0.1:8000",
+  "apiToken": "replace-with-real-bridge-token",
+  "sqlitePath": "~/Library/Application Support/GTD/mac-sync-bridge/bridge-state.sqlite",
+  "syncIntervalSeconds": 60,
+  "defaultReminderListIdentifier": "REPLACE_WITH_DEFAULT_LIST_ID",
+  "syncedReminderListIdentifiers": [
+    "REPLACE_WITH_INBOX_LIST_ID",
+    "REPLACE_WITH_NEXT_LIST_ID"
+  ],
+  "includeCompletedReminders": true,
+  "backendTimeoutSeconds": 30
+}

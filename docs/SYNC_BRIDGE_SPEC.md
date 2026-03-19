@@ -1305,6 +1305,27 @@ MVP 可在 README 中提前声明：
 4. LaunchAgent 安装脚本
 5. 更详细日志 / metrics
 
+### 16.2.1 本轮已落的“整套跑通前准备”材料（2026-03）
+
+为了直接贴近“再 4 步就开始整套跑通测试”，仓库这轮额外补了几份不是概念稿、而是可直接拿去真机用的材料：
+
+- `mac-sync-bridge/config/config.example.json`
+  - 真机 `config.json` 样板
+  - 约定固定 `bridgeID / backendBaseURL / apiToken / sqlitePath / syncedReminderListIdentifiers`
+- `mac-sync-bridge/launchd/com.iosgtd.syncbridge.plist`
+  - `BridgeApp` 的 LaunchAgent 样板
+  - 先用 `swift run BridgeApp --config ...` 作为 bring-up 入口，方便联调阶段直接看日志
+- `mac-sync-bridge/scripts/install_launch_agent.sh`
+  - 自动渲染 plist 中的 `WORKDIR / CONFIG_PATH / LOG_DIR / HOME`
+  - 自动安装到 `~/Library/LaunchAgents/` 并 kickstart
+- `docs/BRIDGE_COMPILE_PREP.md`
+  - 把真机 `swift build / swift test / doctor / sync-once / BridgeApp --once / LaunchAgent` 收成一个 compile-prep 清单
+- `docs/BRIDGE_E2E_MANUAL.md`
+  - 把 Apple→backend、backend→Apple、ack/retry/checkpoint、LaunchAgent 常驻验证收成最小 E2E 手工步骤
+
+这批内容的定位很明确：
+**不是继续扩 scaffold，而是把 bridge 从“代码已接近可运行”推进到“真机联调前最后准备已成文且可执行”。**
+
 ## 16.3 第三批再考虑
 
 1. 菜单栏 UI
@@ -1358,7 +1379,7 @@ MVP 暂按：
 - macOS 真机 build + integration 验证
 
 其中最关键的是：
-- 当前环境还没有对 `BridgeRuntime` + `EventKitReminderStore` + `SQLiteBridgeStateStore` 做真机编译回归
+- 当前 Linux 开发环境还没有对 `BridgeRuntime` + `EventKitReminderStore` + `SQLiteBridgeStateStore` 做真机编译回归；所以本轮补的是 compile-prep 文档、配置样板和 LaunchAgent 安装样板，下一步必须转到 macOS 机器执行
 - pending operation 现在已有消费/执行骨架，但还不是最终后台 delivery runner
 - 现在的代码已经从“demo wiring”推进到“真实 runtime wiring”，但要成为“可联调版本”，还需要下一步在 macOS 上收口 API 可用性、payload 契约与行为差异
 

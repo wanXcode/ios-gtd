@@ -137,4 +137,8 @@ pytest
 - 架构、模型与技术路线：`docs/TECH_SPEC.md`
 - 接口设计与请求/响应约定：`docs/API_SPEC.md`
 - 开发路线图与优先级：`docs/ROADMAP.md`
+- Bridge 设计与当前收口状态：`docs/SYNC_BRIDGE_SPEC.md`
+- Bridge 真机编译前准备：`docs/BRIDGE_COMPILE_PREP.md`
+- Bridge 手工 E2E 跑通说明：`docs/BRIDGE_E2E_MANUAL.md`
 - 后端部署与运行：`backend/README.md`
+- macOS bridge 运行说明：`mac-sync-bridge/README.md`

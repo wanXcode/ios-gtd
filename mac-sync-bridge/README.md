@@ -226,6 +226,22 @@ swift run BridgeApp --backend-base-url http://127.0.0.1:8000 --api-token "$BRIDG
 swift run BridgeApp --backend-base-url http://127.0.0.1:8000 --api-token "$BRIDGE_API_TOKEN" --sync-interval 60 --max-iterations 3
 ```
 
+如果要直接进入真机联调前准备，仓库里现在还有三份更贴近实操的材料：
+
+- `config/config.example.json`
+  - 真机 `config.json` 样板，可直接复制到 `~/Library/Application Support/GTD/mac-sync-bridge/config.json`
+- `launchd/com.iosgtd.syncbridge.plist`
+  - LaunchAgent 样板，给 `BridgeApp` 当常驻入口
+- `scripts/install_launch_agent.sh`
+  - 一键渲染 + 安装 LaunchAgent 的脚本
+
+以及两份联调文档：
+
+- `../docs/BRIDGE_COMPILE_PREP.md`
+  - 开始整套跑通测试前的 compile-prep / LaunchAgent 准备清单
+- `../docs/BRIDGE_E2E_MANUAL.md`
+  - 真机双向手工跑通说明
+
 也可以把运行态配置放进默认 JSON 文件：
 
 ```json
@@ -285,5 +301,5 @@ swift run BridgeApp --backend-base-url http://127.0.0.1:8000 --api-token "$BRIDG
 1. 在 macOS 上跑通 `swift build && swift test`
 2. 在 macOS 上实际跑通新的 `HTTPClientTests`
 3. 把 pending executor 分裂成 remote push replay / local write replay 两类
-4. 让 `BridgeApp` / LaunchAgent 真正消费 `BridgeRuntimeConfiguration` 并进入常驻循环
-5. 做第一次真机 EventKit 联调记录
+4. 做第一次真机 EventKit 联调记录
+5. 把 LaunchAgent 从 `swift run BridgeApp` 过渡到发布态可执行文件/签名安装方案
