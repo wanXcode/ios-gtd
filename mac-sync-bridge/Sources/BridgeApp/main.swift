@@ -1,9 +1,10 @@
-import BridgeCore
+import BridgeRuntime
 import Foundation
 
 @main
 struct BridgeAppMain {
     static func main() {
-        print("BridgeApp scaffold. Next step: wire LaunchAgent or menu bar host around BridgeCore.SyncCoordinator.")
+        let configPath = NSString(string: BridgeRuntimeConfiguration.defaultConfigPath).expandingTildeInPath
+        print("BridgeApp scaffold. Next step: wrap LaunchAgent/menu bar host around BridgeRuntime. Default config path: \(configPath)")
     }
 }

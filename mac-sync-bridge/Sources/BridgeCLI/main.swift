@@ -1,22 +1,23 @@
-import BridgeCore
-import BridgeModels
-import EventKitAdapter
+import BridgeRuntime
 import Foundation
-import HTTPClient
-import Persistence
 
 @main
 struct BridgeCLIApp {
     static func main() async {
         do {
-            let command = CommandLine.arguments.dropFirst().first ?? "doctor"
+            let arguments = Array(CommandLine.arguments.dropFirst())
+            let command = arguments.first ?? "doctor"
+            let runtimeArguments = Array(arguments.dropFirst())
+            let loader = BridgeRuntimeConfigurationLoader()
+            let configuration = try loader.load(arguments: runtimeArguments)
+
             switch command {
             case "doctor":
-                try await runDoctor()
+                try await runDoctor(configuration: configuration)
             case "sync-once", "run":
-                try await runSyncOnce()
+                try await runSyncOnce(configuration: configuration)
             case "print-config":
-                try await printConfig()
+                try printConfig(configuration: configuration)
             default:
                 fputs("Unknown command: \(command)\n", stderr)
                 Foundation.exit(1)
@@ -27,58 +28,31 @@ struct BridgeCLIApp {
         }
     }
 
-    private static func makeDependencies() -> SyncCoordinatorDependencies {
-        let now = Date()
-        let reminder = ReminderRecord(
-            id: "local-reminder-1",
-            externalIdentifier: "ek-local-reminder-1",
-            title: "Sample reminder",
-            notes: "Scaffold data",
-            dueDate: nil,
-            isCompleted: false,
-            isDeleted: false,
-            listIdentifier: "default",
-            lastModifiedAt: now,
-            fingerprint: ReminderFingerprint(value: "fp-local-1")
-        )
+    private static func runDoctor(configuration: BridgeRuntimeConfiguration) async throws {
+        let runtime = try await BridgeRuntimeConfigurationLoader().makeRuntime(configuration: configuration)
+        let authorization = try await runtime.reminderStore.authorizationStatus()
+        let persistedConfiguration = try await runtime.bridgeStore.loadConfiguration()
+        let lists = try? await runtime.reminderStore.fetchReminderLists()
 
-        let reminderStore = InMemoryReminderStore(reminders: [reminder])
-        let backendClient = InMemoryBackendSyncClient()
-        let bridgeStore = InMemoryBridgeStateStore(
-            configuration: BridgeConfiguration(
-                backendBaseURL: URL(string: "http://127.0.0.1:8000")!,
-                apiToken: nil,
-                syncIntervalSeconds: 300,
-                defaultReminderListIdentifier: "default"
-            )
-        )
-
-        return SyncCoordinatorDependencies(
-            reminderStore: reminderStore,
-            backendClient: backendClient,
-            bridgeStore: bridgeStore,
-            conflictResolver: LastWriteWinsConflictResolver(),
-            retryScheduler: ExponentialBackoffRetryScheduler()
-        )
-    }
-
-    private static func runDoctor() async throws {
-        let dependencies = makeDependencies()
-        let authorization = try await dependencies.reminderStore.authorizationStatus()
-        let configuration = try await dependencies.bridgeStore.loadConfiguration()
+        print("bridge_id=\(configuration.bridgeID)")
         print("authorization=\(authorization.rawValue)")
-        print("backend=\(configuration.backendBaseURL.absoluteString)")
-        print("interval=\(Int(configuration.syncIntervalSeconds))s")
+        print("backend=\(persistedConfiguration.backendBaseURL.absoluteString)")
+        print("sqlite=\(configuration.sqliteURL.path)")
+        print("interval=\(Int(persistedConfiguration.syncIntervalSeconds))s")
+        print("default_list=\(persistedConfiguration.defaultReminderListIdentifier ?? "<none>")")
+        print("synced_lists=\(configuration.syncedReminderListIdentifiers.joined(separator: ","))")
+        if let lists {
+            print("discovered_lists=\(lists.count)")
+        }
     }
 
-    private static func runSyncOnce() async throws {
-        let coordinator = SyncCoordinator(dependencies: makeDependencies())
-        let report = try await coordinator.runSync(direction: .bidirectional)
-        print("sync finished pulled=\(report.pulledCount) pushed=\(report.pushedCount) acked=\(report.ackedCount) conflicts=\(report.conflictCount) retries=\(report.queuedRetryCount)")
+    private static func runSyncOnce(configuration: BridgeRuntimeConfiguration) async throws {
+        let runtime = try await BridgeRuntimeConfigurationLoader().makeRuntime(configuration: configuration)
+        let report = try await runtime.coordinator.runSync(direction: .bidirectional)
+        print("sync finished bridge_id=\(configuration.bridgeID) pulled=\(report.pulledCount) pushed=\(report.pushedCount) acked=\(report.ackedCount) conflicts=\(report.conflictCount) retries=\(report.queuedRetryCount) pending_consumed=\(report.consumedPendingCount)")
     }
 
-    private static func printConfig() async throws {
-        let configuration = try await makeDependencies().bridgeStore.loadConfiguration()
+    private static func printConfig(configuration: BridgeRuntimeConfiguration) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(configuration)

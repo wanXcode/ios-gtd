@@ -12,7 +12,8 @@ let package = Package(
         .library(name: "BridgeCore", targets: ["BridgeCore"]),
         .library(name: "EventKitAdapter", targets: ["EventKitAdapter"]),
         .library(name: "HTTPClient", targets: ["HTTPClient"]),
-        .library(name: "Persistence", targets: ["Persistence"])
+        .library(name: "Persistence", targets: ["Persistence"]),
+        .library(name: "BridgeRuntime", targets: ["BridgeRuntime"])
     ],
     dependencies: [
         // 后续可加入：
@@ -39,17 +40,25 @@ let package = Package(
             name: "Persistence",
             dependencies: ["BridgeModels"]
         ),
+        .target(
+            name: "BridgeRuntime",
+            dependencies: ["BridgeCore", "EventKitAdapter", "HTTPClient", "Persistence"]
+        ),
         .executableTarget(
             name: "BridgeCLI",
-            dependencies: ["BridgeCore"]
+            dependencies: ["BridgeRuntime"]
         ),
         .executableTarget(
             name: "BridgeApp",
-            dependencies: ["BridgeCore"]
+            dependencies: ["BridgeRuntime"]
         ),
         .testTarget(
             name: "BridgeCoreTests",
             dependencies: ["BridgeCore"]
+        ),
+        .testTarget(
+            name: "BridgeRuntimeTests",
+            dependencies: ["BridgeRuntime"]
         )
     ]
 )

@@ -385,31 +385,79 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 - 输出日志
 - 后续接 LaunchAgent
 
+### 5.5.1 当前 runtime configuration 约定（2026-03）
+
+当前 `mac-sync-bridge` 已新增 `BridgeRuntime` target，用于把 CLI / App 的运行态配置和依赖组装收口。
+
+当前约定的 runtime 配置字段：
+- `bridgeID`
+- `backendBaseURL`
+- `apiToken`
+- `sqlitePath`
+- `syncIntervalSeconds`
+- `defaultReminderListIdentifier`
+- `syncedReminderListIdentifiers`
+- `includeCompletedReminders`
+- `backendTimeoutSeconds`
+
+配置来源优先级：
+1. CLI flags
+2. 环境变量
+3. `config.json`
+4. 内置默认值
+
+默认配置文件路径：
+- `~/Library/Application Support/GTD/mac-sync-bridge/config.json`
+
+当前 CLI 已支持直接通过运行态配置完成真正的依赖组装，而不再依赖 in-memory demo：
+- `SQLiteBridgeStateStore(databaseURL:)`
+- `EventKitReminderStore(configuration:)`
+- `URLSessionBackendSyncClient(configuration:)`
+- `SyncCoordinatorDependencies(bridgeID:)`
+
+也就是说，Bridge 当前已经具备：
+- 固定 `bridge_id`
+- 固定 SQLite 落盘路径
+- backend base URL / token 注入
+- 默认 Reminders list 与 synced lists 配置
+- `doctor` 阶段打印 runtime wiring 信息
+
 ---
 
 ## 6. 本地数据模型
 
 ## 6.1 BridgeConfig
 
+当前实现中的 runtime config 已先收敛成下面这组更接近工程落地的字段：
+
 ```json
 {
-  "bridge_id": "macbook-pro-001",
-  "backend_base_url": "https://example.com",
-  "api_token": "***",
-  "poll_interval_seconds": 20,
-  "apple_scan_window_seconds": 120,
-  "enable_push_to_apple": true,
-  "enable_pull_from_apple": true,
-  "default_bucket_list_map": {
-    "Inbox": "inbox",
-    "Next": "next",
-    "Waiting": "waiting",
-    "Someday": "someday",
-    "Projects": "project",
-    "Done": "done"
-  }
+  "bridgeID": "macbook-pro-001",
+  "backendBaseURL": "https://example.com",
+  "apiToken": "***",
+  "sqlitePath": "~/Library/Application Support/GTD/mac-sync-bridge/bridge-state.sqlite",
+  "syncIntervalSeconds": 300,
+  "defaultReminderListIdentifier": "x-apple-reminderkit-list",
+  "syncedReminderListIdentifiers": ["inbox-list-id", "next-list-id"],
+  "includeCompletedReminders": true,
+  "backendTimeoutSeconds": 30
 }
 ```
+
+说明：
+- `bridgeID`：设备/bridge 的稳定身份，后续应固定而不是每次随机生成
+- `sqlitePath`：bridge 本地状态库路径
+- `defaultReminderListIdentifier`：写入新 reminder 时的默认 list fallback
+- `syncedReminderListIdentifiers`：限定只同步哪些 Apple lists；为空表示不过滤
+- `apiToken`：当前先走 env / config.json；后续可以迁移到 Keychain
+
+旧草案中的：
+- `apple_scan_window_seconds`
+- `enable_push_to_apple`
+- `enable_pull_from_apple`
+- `default_bucket_list_map`
+
+在当前代码里还没有进入正式 runtime config 收口，仍保留为后续可扩展项。
 
 ## 6.2 LocalCheckpoint
 
@@ -1189,8 +1237,13 @@ MVP 可在 README 中提前声明：
 - `Persistence/BridgeStateStore.swift`
   - 已定义 `BridgeStateStore` 协议、`BridgeConfiguration`
   - 已补 `SQLiteSchemaDefinition`、`SQLiteBridgeStateStore` 与 pending operation 更新/删除接口
+- `BridgeRuntime/RuntimeConfiguration.swift`
+  - 已新增 `BridgeRuntimeConfiguration` / `BridgeRuntimeConfigurationLoader`
+  - 已支持 `CLI > ENV > config.json > defaults` 的配置合并
+  - 已负责组装 SQLite / EventKit / URLSession backend client runtime
 - `BridgeCLI/main.swift`
   - 已支持 `doctor` / `sync-once` / `run` / `print-config`
+  - 已切到真实 runtime wiring，不再使用 in-memory demo 依赖
 - `Tests/BridgeCoreTests/SyncCoordinatorTests.swift`
   - 已覆盖最小 push / pull 主链路测试
   - 已补 rejected push → pending queue 测试
@@ -1262,9 +1315,9 @@ MVP 暂按：
 - macOS 真机 build + integration 验证
 
 其中最关键的是：
-- 当前环境还没有对 `EventKitReminderStore` 和 `SQLiteBridgeStateStore` 做真机编译回归
+- 当前环境还没有对 `BridgeRuntime` + `EventKitReminderStore` + `SQLiteBridgeStateStore` 做真机编译回归
 - pending operation 现在已有消费/执行骨架，但还不是最终后台 delivery runner
-- 现在的代码已经足够表达真实结构，但要成为“可联调版本”，还需要下一步在 macOS 上收口 API 可用性、payload 契约与行为差异
+- 现在的代码已经从“demo wiring”推进到“真实 runtime wiring”，但要成为“可联调版本”，还需要下一步在 macOS 上收口 API 可用性、payload 契约与行为差异
 
 ---
 

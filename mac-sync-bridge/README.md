@@ -13,8 +13,9 @@ Mac Sync Bridge 是 GTD 系统的本地同步代理，负责在：
 - `Persistence` 已从接口推进到 `SQLiteBridgeStateStore` 级别结构化实现
 - `EventKitAdapter` 已从纯 fake 推进到 `EventKitReminderStore` 真实适配层结构
 - `SyncCoordinator` 已补到 pending operation 消费/执行边界
-- CLI 可跑 `doctor` / `sync-once` / `print-config`
-- `BridgeCoreTests` 已覆盖最小 push / pull 主链路、rejected push retry queue、pending replay 消费骨架
+- 新增 `BridgeRuntime`，把 CLI runtime config / SQLite / URLSession client / EventKit wiring 串起来
+- CLI 可跑 `doctor` / `sync-once` / `print-config`，且不再依赖 in-memory demo wiring
+- `BridgeCoreTests` + `BridgeRuntimeTests` 已覆盖主链路与配置加载优先级
 
 它还不是可直接联调完成版，但相比纯 in-memory scaffold，已经更接近“真实可接 API / SQLite / EventKit”的状态。
 
@@ -107,6 +108,36 @@ Mac Sync Bridge 是 GTD 系统的本地同步代理，负责在：
 - list mapping 验证
 - 默认 list fallback
 
+### 5. BridgeRuntime：把 scaffold 真正接成 runtime
+
+这轮补了一个新的 `BridgeRuntime` target，把此前分散的 scaffold 接成一条更像真实运行态的 wiring：
+
+- `BridgeRuntimeConfiguration`
+  - `bridgeID`
+  - `backendBaseURL`
+  - `apiToken`
+  - `sqlitePath`
+  - `syncIntervalSeconds`
+  - `defaultReminderListIdentifier`
+  - `syncedReminderListIdentifiers`
+  - `includeCompletedReminders`
+  - `backendTimeoutSeconds`
+- `BridgeRuntimeConfigurationLoader`
+  - 支持 `config.json` + 环境变量 + CLI flags 三层配置合并
+  - 优先级：`CLI > ENV > config.json > defaults`
+- `BridgeRuntime`
+  - 统一组装 `SQLiteBridgeStateStore`
+  - 统一组装 `EventKitReminderStore`
+  - 统一组装 `URLSessionBackendSyncClient`
+  - 生成真正带 `bridgeID` 的 `SyncCoordinator`
+
+这意味着 `bridge-cli` 不再只是“打印 in-memory demo 数据”，而是已经开始具备：
+- 固定 bridge identity
+- 持久化 SQLite state
+- backend token / base URL 注入
+- 默认 Reminders list / synced lists 配置
+- doctor 阶段发现 lists / 打印 sqlite path / 打印 runtime config
+
 ## 当前代码结构
 
 ```text
@@ -135,10 +166,14 @@ mac-sync-bridge/
     Persistence/
       BridgeStateStore.swift
       README.md
+    BridgeRuntime/
+      RuntimeConfiguration.swift
   Tests/
     BridgeCoreTests/
       SyncCoordinatorTests.swift
       README.md
+    BridgeRuntimeTests/
+      RuntimeConfigurationTests.swift
 ```
 
 ## 本地验证
@@ -148,9 +183,35 @@ mac-sync-bridge/
 ```bash
 swift build
 swift test
-swift run bridge-cli doctor
-swift run bridge-cli sync-once
+swift run bridge-cli print-config --backend-base-url http://127.0.0.1:8000
+swift run bridge-cli doctor --backend-base-url http://127.0.0.1:8000 --sqlite-path ~/Library/Application\ Support/GTD/mac-sync-bridge/bridge-state.sqlite
+swift run bridge-cli sync-once --backend-base-url http://127.0.0.1:8000 --api-token "$BRIDGE_API_TOKEN"
 ```
+
+也可以把运行态配置放进默认 JSON 文件：
+
+```json
+{
+  "bridgeID": "mbp-14-sync-bridge",
+  "backendBaseURL": "https://gtd.example.com",
+  "apiToken": "token-value",
+  "sqlitePath": "~/Library/Application Support/GTD/mac-sync-bridge/bridge-state.sqlite",
+  "syncIntervalSeconds": 300,
+  "defaultReminderListIdentifier": "x-apple-reminderkit-list",
+  "syncedReminderListIdentifiers": ["inbox-list-id", "next-list-id"],
+  "includeCompletedReminders": true,
+  "backendTimeoutSeconds": 30
+}
+```
+
+默认路径：
+- `~/Library/Application Support/GTD/mac-sync-bridge/config.json`
+
+配置优先级：
+- CLI flags
+- 环境变量（如 `BRIDGE_ID` / `BRIDGE_BACKEND_BASE_URL` / `BRIDGE_API_TOKEN` / `BRIDGE_SQLITE_PATH` / `BRIDGE_DEFAULT_LIST_ID` / `BRIDGE_SYNCED_LIST_IDS`）
+- config.json
+- 内置默认值
 
 > 当前这个 Linux 容器里没有安装 `swift`，所以这轮只能完成代码推进、测试补充与文档对齐，无法在此处真正执行 Swift 编译回归。下一步需要在 macOS 开发机上做真机编译验证。
 
@@ -177,7 +238,7 @@ swift run bridge-cli sync-once
    - 不同 Reminders 账户类型（iCloud / 本地 / Exchange）的字段表现
 
 4. **SQLite migration 仍是单版本 seed 级别**
-   - 现在 checkpoint 字段已更真实
+   - 现在 checkpoint 字段已更真实，且 CLI 已开始真正落盘使用 SQLite path
    - 但还没补正式 migration graph / 版本升级脚本 / locked busy retry / corruption recovery
 
 ## 推荐下一步
@@ -186,5 +247,5 @@ swift run bridge-cli sync-once
 1. 在 macOS 上跑通 `swift build && swift test`
 2. 给 `URLSessionBackendSyncClient` 加 contract tests（mock JSON fixtures）
 3. 把 pending executor 分裂成 remote push replay / local write replay 两类
-4. 让 CLI / App 真正加载 SQLite 路径、bridge_id、backend token、default list 配置
+4. 让 `BridgeApp` / LaunchAgent 真正消费 `BridgeRuntimeConfiguration` 并进入常驻循环
 5. 做第一次真机 EventKit 联调记录
