@@ -46,7 +46,8 @@ struct BridgeCLIApp {
         if let lists {
             print("discovered_lists=\(lists.count)")
             for list in lists {
-                print("list.id=\(list.identifier) title=\(list.title) writable=\(list.allowsContentModifications) source=\(list.sourceIdentifier ?? \"<unknown>\")")
+                let sourceIdentifier = list.sourceIdentifier ?? "<unknown>"
+                print("list.id=\(list.identifier) title=\(list.title) writable=\(list.allowsContentModifications) source=\(sourceIdentifier)")
             }
         }
     }
@@ -57,7 +58,8 @@ struct BridgeCLIApp {
         print("authorization=\(authorization.rawValue)")
         let lists = try await runtime.reminderStore.fetchReminderLists()
         for list in lists {
-            print("\(list.identifier)\t\(list.title)\twritable=\(list.allowsContentModifications)\tsource=\(list.sourceIdentifier ?? \"<unknown>\")")
+            let sourceIdentifier = list.sourceIdentifier ?? "<unknown>"
+            print("\(list.identifier)\t\(list.title)\twritable=\(list.allowsContentModifications)\tsource=\(sourceIdentifier)")
         }
     }
 
