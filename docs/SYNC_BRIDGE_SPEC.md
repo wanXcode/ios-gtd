@@ -145,6 +145,37 @@ MVP 不建议多线程乱并发写 EventKit。
 - reminder 更新与保存
 - 本地字段标准化输出
 
+### 5.2.1 当前 EventKit adapter 结构（2026-03）
+
+当前仓库中 `EventKitAdapter/ReminderStore.swift` 已不再只是 in-memory fake，而是补到接近真实适配层的边界：
+
+- `ReminderStore`
+  - `authorizationStatus()`
+  - `requestAccessIfNeeded()`
+  - `fetchReminders()`
+  - `upsert(reminders:)`
+  - `delete(reminders:)`
+- `EventKitReminderStoreConfiguration`
+  - `syncedListIdentifiers`
+  - `defaultListIdentifier`
+  - `includeCompleted`
+  - `scanWindow`
+- `ReminderDTOConverting`
+  - 负责 `EKReminder` ↔ `ReminderRecord` 的字段归一化与 fingerprint 生成
+- `EventKitReminderStore`
+  - 负责授权、扫描、DTO 转换、写入、删除
+  - 非 macOS / 无 EventKit 环境下提供 stub fallback，避免其他 target 被平台依赖卡死
+
+当前实现重点是把模块边界和真实流程定型：
+- 授权 -> scan -> DTO -> upsert/delete
+- BridgeCore 继续只依赖 `ReminderStore` 协议，不直接碰 `EKEventStore`
+
+后续真机联调时主要再补：
+- 全天任务 / 时区更精细转换
+- `lastModifiedDate` 稳定性验证
+- 删除缺失检测策略
+- 更细的 list / bucket 映射器
+
 ## 5.3 HTTPClient
 负责后端 API：
 - `POST /api/sync/apple/pull`
@@ -313,6 +344,30 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 - `exportSQLiteSchema`
 
 这意味着未来换成 `SQLiteBridgeStateStore` 时，不需要再改 `BridgeCore` 依赖方向。
+
+### 5.4.3 当前 SQLiteBridgeStateStore 落地状态（2026-03）
+
+当前仓库已新增一版基于原生 `SQLite3` 的 `SQLiteBridgeStateStore`，定位是：
+
+**不是最终工业级实现，但已经足够表达真实 bridge 状态如何落 SQLite。**
+
+当前已具备：
+- 自动创建数据库父目录
+- 执行 schema 建表
+- 在 `schema_migrations` 记录 `currentVersion`
+- 初始化 `bridge_configuration` / `sync_checkpoint` 默认行
+- `WAL` / `foreign_keys` 初始化
+- 批量 mapping / pending operations 写入时使用 transaction
+- `configuration` / `checkpoint` / `mappings` / `pending_operations` 的完整 load/save/upsert/remove
+
+当前仍缺：
+- 更正式的 migration graph（不仅是 currentVersion 打点）
+- busy / locked 自动退避
+- rollback / corruption 恢复
+- tombstone 清理 / vacuum 策略
+- 真机上的 durability 与并发验证
+
+但从工程阶段看，它已经把 bridge 从“只有 schema 文档”推进到“可以开始真的把 state 落盘”。
 
 ## 5.5 BridgeCLI / BridgeApp
 负责宿主入口：
@@ -1111,20 +1166,22 @@ MVP 可在 README 中提前声明：
   - 已提供单轮同步主流程：load checkpoint → pull → plan → apply local → push → ack → persist checkpoint / mapping / retry queue
 - `EventKitAdapter/ReminderStore.swift`
   - 已定义 `ReminderStore` 协议与 `InMemoryReminderStore`
+  - 已补 `EventKitReminderStoreConfiguration` / `ReminderDTOConverting` / `EventKitReminderStore`
 - `HTTPClient/BackendSyncClient.swift`
   - 已定义 `BackendSyncClient` 协议与 `InMemoryBackendSyncClient`
   - 已补 `URLSessionBackendSyncClient`、`BackendEndpointSet`、`BackendClientError`
 - `Persistence/BridgeStateStore.swift`
   - 已定义 `BridgeStateStore` 协议、`BridgeConfiguration`
-  - 已补 `SQLiteSchemaDefinition` 与 pending operation 更新/删除接口
+  - 已补 `SQLiteSchemaDefinition`、`SQLiteBridgeStateStore` 与 pending operation 更新/删除接口
 - `BridgeCLI/main.swift`
   - 已支持 `doctor` / `sync-once` / `run` / `print-config`
 - `Tests/BridgeCoreTests/SyncCoordinatorTests.swift`
   - 已覆盖最小 push / pull 主链路测试
+  - 已补 rejected push → pending queue 测试
 
 也就是说，下一阶段重点已经可以从“先搭骨架”切到：
-- 把 `ReminderStore` 换成真实 EventKit 实现
-- 把 `BridgeStateStore` 换成真实 SQLite/GRDB 实现
+- 在 macOS 上把 `ReminderStore` 真正接到 EventKit
+- 把 `SQLiteBridgeStateStore` 在真机上编译并补强 locked/migration 细节
 - 用真实后端 payload 校准 `URLSessionBackendSyncClient`
 
 ## 16.2 第二批补齐
@@ -1181,11 +1238,15 @@ MVP 暂按：
 ## 17.5 当前 still-missing 的工程缺口
 
 虽然 scaffold 更真实了，但真正可联调前还缺：
-- 真实 `EKEventStore` adapter
-- 真实 SQLite migration + transaction layer
 - pending operation 的消费执行器
 - 配置装载（文件/Keychain/env）
 - request/response contract 测试
+- LaunchAgent / 常驻运行方式
+- macOS 真机 build + integration 验证
+
+其中最关键的是：
+- 当前环境还没有对 `EventKitReminderStore` 和 `SQLiteBridgeStateStore` 做真机编译回归
+- 现在的代码已经足够表达真实结构，但要成为“可联调版本”，还需要下一步在 macOS 上收口 API 可用性与行为差异
 
 ---
 
@@ -1216,3 +1277,8 @@ Mac Sync Bridge 的 MVP 应该被实现为：
 - 不乱写
 - 不重复创建
 - 能为后续产品化形态留接口
+
+而以当前仓库状态看，bridge 已经明显越过“只有文档和假实现”的阶段，进入：
+- EventKit adapter 真实结构已落地
+- SQLite state store 真实结构已落地
+- 下一步主要是 macOS 真机编译、行为校准、后端 contract 联调
