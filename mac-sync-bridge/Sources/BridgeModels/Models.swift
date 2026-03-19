@@ -21,6 +21,13 @@ public enum OperationKind: String, Codable, Sendable {
     case deleteLocalReminder
 }
 
+public enum OperationStatus: String, Codable, Sendable {
+    case pending
+    case retrying
+    case failed
+    case completed
+}
+
 public enum ConflictResolutionStrategy: String, Codable, Sendable {
     case lastWriteWins
     case backendWins
@@ -107,21 +114,30 @@ public struct BackendTaskRecord: Identifiable, Codable, Hashable, Sendable {
 public struct ReminderTaskMapping: Codable, Hashable, Sendable {
     public let reminderID: String
     public let taskID: String
+    public var reminderExternalIdentifier: String?
+    public var reminderListIdentifier: String?
     public var reminderFingerprint: ReminderFingerprint
     public var backendVersionToken: String
+    public var syncState: SyncEntityState
     public var syncedAt: Date
 
     public init(
         reminderID: String,
         taskID: String,
+        reminderExternalIdentifier: String? = nil,
+        reminderListIdentifier: String? = nil,
         reminderFingerprint: ReminderFingerprint,
         backendVersionToken: String,
+        syncState: SyncEntityState = .active,
         syncedAt: Date
     ) {
         self.reminderID = reminderID
         self.taskID = taskID
+        self.reminderExternalIdentifier = reminderExternalIdentifier
+        self.reminderListIdentifier = reminderListIdentifier
         self.reminderFingerprint = reminderFingerprint
         self.backendVersionToken = backendVersionToken
+        self.syncState = syncState
         self.syncedAt = syncedAt
     }
 }
@@ -129,10 +145,28 @@ public struct ReminderTaskMapping: Codable, Hashable, Sendable {
 public struct SyncCheckpoint: Codable, Hashable, Sendable {
     public var backendCursor: String?
     public var lastSuccessfulSyncAt: Date?
+    public var lastSuccessfulPullAt: Date?
+    public var lastSuccessfulPushAt: Date?
+    public var lastSuccessfulAckAt: Date?
+    public var lastAppleScanStartedAt: Date?
+    public var lastSyncStatus: String?
 
-    public init(backendCursor: String? = nil, lastSuccessfulSyncAt: Date? = nil) {
+    public init(
+        backendCursor: String? = nil,
+        lastSuccessfulSyncAt: Date? = nil,
+        lastSuccessfulPullAt: Date? = nil,
+        lastSuccessfulPushAt: Date? = nil,
+        lastSuccessfulAckAt: Date? = nil,
+        lastAppleScanStartedAt: Date? = nil,
+        lastSyncStatus: String? = nil
+    ) {
         self.backendCursor = backendCursor
         self.lastSuccessfulSyncAt = lastSuccessfulSyncAt
+        self.lastSuccessfulPullAt = lastSuccessfulPullAt
+        self.lastSuccessfulPushAt = lastSuccessfulPushAt
+        self.lastSuccessfulAckAt = lastSuccessfulAckAt
+        self.lastAppleScanStartedAt = lastAppleScanStartedAt
+        self.lastSyncStatus = lastSyncStatus
     }
 }
 
@@ -141,6 +175,8 @@ public struct PendingOperation: Identifiable, Codable, Hashable, Sendable {
     public let kind: OperationKind
     public let entityID: String
     public var payload: Data?
+    public var status: OperationStatus
+    public var lastErrorMessage: String?
     public var attemptCount: Int
     public var nextRetryAt: Date?
     public var createdAt: Date
@@ -151,6 +187,8 @@ public struct PendingOperation: Identifiable, Codable, Hashable, Sendable {
         kind: OperationKind,
         entityID: String,
         payload: Data? = nil,
+        status: OperationStatus = .pending,
+        lastErrorMessage: String? = nil,
         attemptCount: Int = 0,
         nextRetryAt: Date? = nil,
         createdAt: Date,
@@ -160,6 +198,8 @@ public struct PendingOperation: Identifiable, Codable, Hashable, Sendable {
         self.kind = kind
         self.entityID = entityID
         self.payload = payload
+        self.status = status
+        self.lastErrorMessage = lastErrorMessage
         self.attemptCount = attemptCount
         self.nextRetryAt = nextRetryAt
         self.createdAt = createdAt
@@ -255,6 +295,35 @@ public struct AckRequest: Codable, Sendable {
     public init(taskIDs: [String], cursor: String? = nil) {
         self.taskIDs = taskIDs
         self.cursor = cursor
+    }
+}
+
+public struct PullPlanningContext: Sendable {
+    public var backendChanges: [BackendTaskRecord]
+    public var reminderByID: [String: ReminderRecord]
+    public var mappingByTaskID: [String: ReminderTaskMapping]
+
+    public init(
+        backendChanges: [BackendTaskRecord],
+        reminderByID: [String: ReminderRecord],
+        mappingByTaskID: [String: ReminderTaskMapping]
+    ) {
+        self.backendChanges = backendChanges
+        self.reminderByID = reminderByID
+        self.mappingByTaskID = mappingByTaskID
+    }
+}
+
+public struct PushPlanningContext: Sendable {
+    public var reminders: [ReminderRecord]
+    public var mappingByReminderID: [String: ReminderTaskMapping]
+
+    public init(
+        reminders: [ReminderRecord],
+        mappingByReminderID: [String: ReminderTaskMapping]
+    ) {
+        self.reminders = reminders
+        self.mappingByReminderID = mappingByReminderID
     }
 }
 

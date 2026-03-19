@@ -49,14 +49,19 @@ public actor SyncCoordinator {
             )
         }
 
+        let finishedAt = dependencies.dateProvider.now()
         let nextCheckpoint = SyncCheckpoint(
             backendCursor: pulled.nextCursor ?? checkpoint.backendCursor,
-            lastSuccessfulSyncAt: dependencies.dateProvider.now()
+            lastSuccessfulSyncAt: finishedAt,
+            lastSuccessfulPullAt: pulled.changes.isEmpty ? checkpoint.lastSuccessfulPullAt : finishedAt,
+            lastSuccessfulPushAt: pushResponse.accepted.isEmpty ? checkpoint.lastSuccessfulPushAt : finishedAt,
+            lastSuccessfulAckAt: ackIDs.isEmpty ? checkpoint.lastSuccessfulAckAt : finishedAt,
+            lastAppleScanStartedAt: startedAt,
+            lastSyncStatus: "success"
         )
         try await dependencies.bridgeStore.saveCheckpoint(nextCheckpoint)
 
         let queuedRetryCount = try await queueRejectedMutations(pushResponse.rejectedReminderIDs, from: plan.remoteMutations)
-        let finishedAt = dependencies.dateProvider.now()
 
         return SyncRunReport(
             startedAt: startedAt,
@@ -79,104 +84,54 @@ public actor SyncCoordinator {
         let mappingByTaskID = Dictionary(uniqueKeysWithValues: mappings.map { ($0.taskID, $0) })
         let reminderByID = Dictionary(uniqueKeysWithValues: reminders.map { ($0.id, $0) })
 
-        var localUpserts: [ReminderRecord] = []
-        var localDeletes: [ReminderRecord] = []
-        var remoteMutations: [PushTaskMutation] = []
-        var ackTaskIDs: [String] = []
-        var conflicts: [SyncConflict] = []
+        var plan = SyncPlan()
 
         if direction != .push {
-            for task in backendChanges {
-                if let mapping = mappingByTaskID[task.id], let reminder = reminderByID[mapping.reminderID] {
-                    let reminderChanged = reminder.fingerprint != mapping.reminderFingerprint
-                    let backendChanged = task.versionToken != mapping.backendVersionToken
-
-                    if reminderChanged && backendChanged {
-                        let resolution = dependencies.conflictResolver.resolve(reminder: reminder, backendTask: task)
-                        conflicts.append(SyncConflict(reminder: reminder, backendTask: task, resolution: resolution))
-                        switch resolution {
-                        case .backendWins, .lastWriteWins:
-                            if let resolved = reminderRecord(from: task, existingReminderID: reminder.id, externalIdentifier: reminder.externalIdentifier) {
-                                if task.state == .deleted {
-                                    localDeletes.append(resolved)
-                                } else {
-                                    localUpserts.append(resolved)
-                                }
-                            }
-                            ackTaskIDs.append(task.id)
-                        case .reminderWins:
-                            remoteMutations.append(pushMutation(from: reminder, mappedTaskID: task.id))
-                        case .manualReview:
-                            break
-                        }
-                    } else if backendChanged {
-                        if let resolved = reminderRecord(from: task, existingReminderID: reminder.id, externalIdentifier: reminder.externalIdentifier) {
-                            if task.state == .deleted {
-                                localDeletes.append(resolved)
-                            } else {
-                                localUpserts.append(resolved)
-                            }
-                        }
-                        ackTaskIDs.append(task.id)
-                    }
-                } else if let newReminder = reminderRecord(from: task, existingReminderID: UUID().uuidString, externalIdentifier: UUID().uuidString) {
-                    if task.state == .deleted {
-                        continue
-                    }
-                    localUpserts.append(newReminder)
-                    ackTaskIDs.append(task.id)
-                }
-            }
+            let pullPlan = dependencies.pullPlanner.makePullPlan(
+                context: PullPlanningContext(
+                    backendChanges: backendChanges,
+                    reminderByID: reminderByID,
+                    mappingByTaskID: mappingByTaskID
+                ),
+                conflictResolver: dependencies.conflictResolver
+            )
+            plan.localUpserts.append(contentsOf: pullPlan.localUpserts)
+            plan.localDeletes.append(contentsOf: pullPlan.localDeletes)
+            plan.remoteMutations.append(contentsOf: pullPlan.remoteMutations)
+            plan.ackTaskIDs.append(contentsOf: pullPlan.ackTaskIDs)
+            plan.conflicts.append(contentsOf: pullPlan.conflicts)
         }
 
         if direction != .pull {
-            for reminder in reminders {
-                if let mapping = mappingByReminderID[reminder.id] {
-                    let fingerprintChanged = reminder.fingerprint != mapping.reminderFingerprint
-                    if fingerprintChanged {
-                        remoteMutations.append(pushMutation(from: reminder, mappedTaskID: mapping.taskID))
-                    }
-                } else if !reminder.isDeleted {
-                    remoteMutations.append(pushMutation(from: reminder, mappedTaskID: nil))
-                }
-            }
+            plan.remoteMutations.append(contentsOf: dependencies.pushPlanner.makePushMutations(
+                context: PushPlanningContext(
+                    reminders: reminders,
+                    mappingByReminderID: mappingByReminderID
+                )
+            ))
         }
 
         return SyncPlan(
-            localUpserts: localUpserts,
-            localDeletes: localDeletes,
-            remoteMutations: remoteMutations,
-            ackTaskIDs: ackTaskIDs,
-            conflicts: conflicts
+            localUpserts: plan.localUpserts,
+            localDeletes: plan.localDeletes,
+            remoteMutations: deduplicatingRemoteMutations(plan.remoteMutations),
+            ackTaskIDs: Array(Set(plan.ackTaskIDs)),
+            conflicts: plan.conflicts
         )
     }
 
-    private func reminderRecord(from task: BackendTaskRecord, existingReminderID: String, externalIdentifier: String) -> ReminderRecord? {
-        ReminderRecord(
-            id: existingReminderID,
-            externalIdentifier: externalIdentifier,
-            title: task.title,
-            notes: task.notes,
-            dueDate: task.dueDate,
-            isCompleted: task.state == .completed,
-            isDeleted: task.state == .deleted,
-            listIdentifier: nil,
-            lastModifiedAt: task.updatedAt,
-            fingerprint: ReminderFingerprint(value: task.versionToken)
-        )
-    }
+    private func deduplicatingRemoteMutations(_ mutations: [PushTaskMutation]) -> [PushTaskMutation] {
+        var seen = Set<String>()
+        var ordered: [PushTaskMutation] = []
 
-    private func pushMutation(from reminder: ReminderRecord, mappedTaskID: String?) -> PushTaskMutation {
-        PushTaskMutation(
-            taskID: mappedTaskID,
-            reminderID: reminder.id,
-            title: reminder.title,
-            notes: reminder.notes,
-            dueDate: reminder.dueDate,
-            state: reminder.isDeleted ? .deleted : (reminder.isCompleted ? .completed : .active),
-            fingerprint: reminder.fingerprint,
-            lastModifiedAt: reminder.lastModifiedAt
-        )
+        for mutation in mutations.reversed() {
+            let key = mutation.taskID ?? "reminder:\(mutation.reminderID)"
+            if seen.insert(key).inserted {
+                ordered.append(mutation)
+            }
+        }
+
+        return ordered.reversed()
     }
 
     private func applyLocalChanges(_ reminders: [ReminderRecord], deletes: [ReminderRecord]) async throws {
@@ -197,8 +152,11 @@ public actor SyncCoordinator {
             return ReminderTaskMapping(
                 reminderID: result.reminderID,
                 taskID: result.task.id,
+                reminderExternalIdentifier: reminder.externalIdentifier,
+                reminderListIdentifier: reminder.listIdentifier,
                 reminderFingerprint: reminder.fingerprint,
                 backendVersionToken: result.task.versionToken,
+                syncState: result.task.state,
                 syncedAt: now
             )
         }
@@ -219,6 +177,8 @@ public actor SyncCoordinator {
                 kind: mutation.state == .deleted ? .deleteRemoteTask : .updateRemoteTask,
                 entityID: mutation.reminderID,
                 payload: payload,
+                status: .retrying,
+                lastErrorMessage: "push_rejected",
                 attemptCount: 1,
                 nextRetryAt: dependencies.retryScheduler.nextRetryDate(for: 1, from: now),
                 createdAt: now,

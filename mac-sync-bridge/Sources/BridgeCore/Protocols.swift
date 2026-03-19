@@ -46,6 +46,137 @@ public struct ExponentialBackoffRetryScheduler: RetryScheduling {
     }
 }
 
+public protocol PullPlanning: Sendable {
+    func makePullPlan(context: PullPlanningContext, conflictResolver: any ConflictResolving) -> SyncPlan
+}
+
+public protocol PushPlanning: Sendable {
+    func makePushMutations(context: PushPlanningContext) -> [PushTaskMutation]
+}
+
+public struct DefaultPullPlanner: PullPlanning {
+    public init() {}
+
+    public func makePullPlan(context: PullPlanningContext, conflictResolver: any ConflictResolving) -> SyncPlan {
+        var plan = SyncPlan()
+
+        for task in context.backendChanges {
+            if let mapping = context.mappingByTaskID[task.id], let reminder = context.reminderByID[mapping.reminderID] {
+                let reminderChanged = reminder.fingerprint != mapping.reminderFingerprint
+                let backendChanged = task.versionToken != mapping.backendVersionToken
+
+                if reminderChanged && backendChanged {
+                    let resolution = conflictResolver.resolve(reminder: reminder, backendTask: task)
+                    plan.conflicts.append(SyncConflict(reminder: reminder, backendTask: task, resolution: resolution))
+                    switch resolution {
+                    case .backendWins, .lastWriteWins:
+                        if let resolved = reminderRecord(from: task, existingReminderID: reminder.id, externalIdentifier: reminder.externalIdentifier) {
+                            if task.state == .deleted {
+                                plan.localDeletes.append(resolved)
+                            } else {
+                                plan.localUpserts.append(resolved)
+                            }
+                        }
+                        plan.ackTaskIDs.append(task.id)
+                    case .reminderWins:
+                        plan.remoteMutations.append(pushMutation(from: reminder, mappedTaskID: task.id))
+                    case .manualReview:
+                        break
+                    }
+                } else if backendChanged {
+                    if let resolved = reminderRecord(from: task, existingReminderID: reminder.id, externalIdentifier: reminder.externalIdentifier) {
+                        if task.state == .deleted {
+                            plan.localDeletes.append(resolved)
+                        } else {
+                            plan.localUpserts.append(resolved)
+                        }
+                    }
+                    plan.ackTaskIDs.append(task.id)
+                }
+            } else if let newReminder = reminderRecord(from: task, existingReminderID: UUID().uuidString, externalIdentifier: UUID().uuidString) {
+                if task.state == .deleted {
+                    continue
+                }
+                plan.localUpserts.append(newReminder)
+                plan.ackTaskIDs.append(task.id)
+            }
+        }
+
+        return plan
+    }
+
+    private func reminderRecord(from task: BackendTaskRecord, existingReminderID: String, externalIdentifier: String) -> ReminderRecord? {
+        ReminderRecord(
+            id: existingReminderID,
+            externalIdentifier: externalIdentifier,
+            title: task.title,
+            notes: task.notes,
+            dueDate: task.dueDate,
+            isCompleted: task.state == .completed,
+            isDeleted: task.state == .deleted,
+            listIdentifier: nil,
+            lastModifiedAt: task.updatedAt,
+            fingerprint: ReminderFingerprint(value: task.versionToken)
+        )
+    }
+
+    private func pushMutation(from reminder: ReminderRecord, mappedTaskID: String?) -> PushTaskMutation {
+        PushTaskMutation(
+            taskID: mappedTaskID,
+            reminderID: reminder.id,
+            title: reminder.title,
+            notes: reminder.notes,
+            dueDate: reminder.dueDate,
+            state: reminder.isDeleted ? .deleted : (reminder.isCompleted ? .completed : .active),
+            fingerprint: reminder.fingerprint,
+            lastModifiedAt: reminder.lastModifiedAt
+        )
+    }
+}
+
+public struct DefaultPushPlanner: PushPlanning {
+    public init() {}
+
+    public func makePushMutations(context: PushPlanningContext) -> [PushTaskMutation] {
+        var remoteMutations: [PushTaskMutation] = []
+
+        for reminder in context.reminders {
+            if let mapping = context.mappingByReminderID[reminder.id] {
+                let fingerprintChanged = reminder.fingerprint != mapping.reminderFingerprint
+                if fingerprintChanged {
+                    remoteMutations.append(
+                        PushTaskMutation(
+                            taskID: mapping.taskID,
+                            reminderID: reminder.id,
+                            title: reminder.title,
+                            notes: reminder.notes,
+                            dueDate: reminder.dueDate,
+                            state: reminder.isDeleted ? .deleted : (reminder.isCompleted ? .completed : .active),
+                            fingerprint: reminder.fingerprint,
+                            lastModifiedAt: reminder.lastModifiedAt
+                        )
+                    )
+                }
+            } else if !reminder.isDeleted {
+                remoteMutations.append(
+                    PushTaskMutation(
+                        taskID: nil,
+                        reminderID: reminder.id,
+                        title: reminder.title,
+                        notes: reminder.notes,
+                        dueDate: reminder.dueDate,
+                        state: reminder.isCompleted ? .completed : .active,
+                        fingerprint: reminder.fingerprint,
+                        lastModifiedAt: reminder.lastModifiedAt
+                    )
+                )
+            }
+        }
+
+        return remoteMutations
+    }
+}
+
 public struct SyncCoordinatorDependencies: Sendable {
     public let reminderStore: any ReminderStore
     public let backendClient: any BackendSyncClient
@@ -53,6 +184,8 @@ public struct SyncCoordinatorDependencies: Sendable {
     public let conflictResolver: any ConflictResolving
     public let retryScheduler: any RetryScheduling
     public let dateProvider: any DateProviding
+    public let pullPlanner: any PullPlanning
+    public let pushPlanner: any PushPlanning
 
     public init(
         reminderStore: any ReminderStore,
@@ -60,7 +193,9 @@ public struct SyncCoordinatorDependencies: Sendable {
         bridgeStore: any BridgeStateStore,
         conflictResolver: any ConflictResolving,
         retryScheduler: any RetryScheduling,
-        dateProvider: any DateProviding = SystemDateProvider()
+        dateProvider: any DateProviding = SystemDateProvider(),
+        pullPlanner: any PullPlanning = DefaultPullPlanner(),
+        pushPlanner: any PushPlanning = DefaultPushPlanner()
     ) {
         self.reminderStore = reminderStore
         self.backendClient = backendClient
@@ -68,5 +203,7 @@ public struct SyncCoordinatorDependencies: Sendable {
         self.conflictResolver = conflictResolver
         self.retryScheduler = retryScheduler
         self.dateProvider = dateProvider
+        self.pullPlanner = pullPlanner
+        self.pushPlanner = pushPlanner
     }
 }

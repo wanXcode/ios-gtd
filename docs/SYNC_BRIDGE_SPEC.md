@@ -148,9 +148,48 @@ MVP 不建议多线程乱并发写 EventKit。
 ## 5.3 HTTPClient
 负责后端 API：
 - `POST /api/sync/apple/pull`
-- `GET /api/sync/apple/push`
+- `POST /api/sync/apple/push`
 - `POST /api/sync/apple/ack`
 - 鉴权、重试、超时、错误解析
+
+### 5.3.1 当前 HTTP client scaffold 约定
+
+当前仓库内已经有一版更真实的 `URLSessionBackendSyncClient` scaffold，接口边界如下：
+
+- `BackendSyncClient`
+  - `pullChanges(request:)`
+  - `pushChanges(request:)`
+  - `ackChanges(request:)`
+- `BackendClientConfiguration`
+  - `baseURL`
+  - `apiToken`
+  - `timeout`
+  - `additionalHeaders`
+  - `jsonEncoder` / `jsonDecoder`
+- `BackendEndpointSet`
+  - 默认 path：
+    - `/api/sync/apple/pull`
+    - `/api/sync/apple/push`
+    - `/api/sync/apple/ack`
+- `URLSessioning`
+  - 方便测试注入 mock session
+- `BackendClientError`
+  - `invalidResponse`
+  - `unexpectedStatusCode`
+  - `encodingFailed`
+  - `invalidURL`
+
+这层现在已经能承担真实实现的主要职责：
+- 组装 URLRequest
+- 注入 Bearer token
+- 编解码 JSON
+- 校验 2xx 状态码
+- 暴露明确错误
+
+后续联调重点不再是“是否要抽协议”，而是：
+- 最终请求/响应 payload 是否跟 backend 契约对齐
+- 是否需要补 query/header 字段
+- 是否要加入 retry / metrics / tracing
 
 ## 5.4 Persistence
 负责本地状态持久化：
@@ -160,6 +199,120 @@ MVP 不建议多线程乱并发写 EventKit。
 - pending ack
 - failed operations
 - config cache
+
+### 5.4.1 SQLite schema 草案
+
+当前 scaffold 已经明确一版 SQLite schema 草案，建议按 migration 方式落地。核心表如下。
+
+#### `bridge_configuration`
+
+```sql
+CREATE TABLE IF NOT EXISTS bridge_configuration (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    backend_base_url TEXT NOT NULL,
+    api_token TEXT,
+    sync_interval_seconds REAL NOT NULL,
+    default_reminder_list_identifier TEXT,
+    updated_at TEXT NOT NULL
+);
+```
+
+用途：
+- 单行配置表
+- 记录 backend 地址、token、同步频率、默认 reminder list
+
+#### `sync_checkpoint`
+
+```sql
+CREATE TABLE IF NOT EXISTS sync_checkpoint (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    backend_cursor TEXT,
+    last_successful_sync_at TEXT,
+    last_successful_pull_at TEXT,
+    last_successful_push_at TEXT,
+    last_successful_ack_at TEXT,
+    last_apple_scan_started_at TEXT,
+    last_sync_status TEXT,
+    updated_at TEXT NOT NULL
+);
+```
+
+用途：
+- 保留 pull / push / ack / apple scan 的独立时间点
+- 后续便于恢复、诊断和增量扫描
+
+#### `reminder_task_mappings`
+
+```sql
+CREATE TABLE IF NOT EXISTS reminder_task_mappings (
+    reminder_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL UNIQUE,
+    reminder_external_identifier TEXT,
+    reminder_list_identifier TEXT,
+    reminder_fingerprint TEXT NOT NULL,
+    backend_version_token TEXT NOT NULL,
+    sync_state TEXT NOT NULL,
+    synced_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mappings_task_id ON reminder_task_mappings(task_id);
+CREATE INDEX IF NOT EXISTS idx_mappings_sync_state ON reminder_task_mappings(sync_state);
+```
+
+用途：
+- reminder ↔ task 的一对一映射
+- 保存本地 fingerprint 和 backend version token
+- 为 conflict / delete / ack 提供稳定依据
+
+#### `pending_operations`
+
+```sql
+CREATE TABLE IF NOT EXISTS pending_operations (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    payload BLOB,
+    status TEXT NOT NULL,
+    last_error_message TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_operations_retry ON pending_operations(status, next_retry_at);
+```
+
+用途：
+- 保存需要重试的 push / delete / local apply 失败操作
+- 支持 retrying / failed / completed 等状态
+
+#### `schema_migrations`
+
+```sql
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+```
+
+用途：
+- 明确 migration version
+- 后续适配 GRDB / 原生 sqlite3 都方便
+
+### 5.4.2 当前 Persistence 接口边界
+
+当前 `BridgeStateStore` 协议已经补到接近真实实现所需：
+- `loadConfiguration` / `saveConfiguration`
+- `loadCheckpoint` / `saveCheckpoint`
+- `loadMappings` / `saveMappings`
+- `loadPendingOperations`
+- `enqueuePendingOperations`
+- `updatePendingOperations`
+- `removePendingOperations`
+- `exportSQLiteSchema`
+
+这意味着未来换成 `SQLiteBridgeStateStore` 时，不需要再改 `BridgeCore` 依赖方向。
 
 ## 5.5 BridgeCLI / BridgeApp
 负责宿主入口：
@@ -198,11 +351,13 @@ MVP 不建议多线程乱并发写 EventKit。
 
 ```json
 {
-  "last_successful_pull_at": "2026-03-19T00:00:00Z",
-  "last_successful_push_fetch_at": "2026-03-19T00:00:10Z",
-  "last_apple_scan_started_at": "2026-03-19T00:00:20Z",
-  "last_backend_ack_at": "2026-03-19T00:00:30Z",
-  "last_sync_run_status": "success"
+  "backend_cursor": "cursor-123",
+  "last_successful_sync_at": "2026-03-19T00:00:00Z",
+  "last_successful_pull_at": "2026-03-19T00:00:10Z",
+  "last_successful_push_at": "2026-03-19T00:00:20Z",
+  "last_successful_ack_at": "2026-03-19T00:00:30Z",
+  "last_apple_scan_started_at": "2026-03-19T00:00:05Z",
+  "last_sync_status": "success"
 }
 ```
 
@@ -214,6 +369,7 @@ MVP 不建议多线程乱并发写 EventKit。
   "apple_reminder_id": "EK_REMINDER_CALENDAR_ITEM_ID",
   "apple_calendar_id": "EKCalendar.calendarIdentifier",
   "apple_list_id": "EKCalendar.calendarIdentifier",
+  "reminder_external_identifier": "EK_REMINDER_CALENDAR_ITEM_ID",
   "last_synced_task_version": 12,
   "last_seen_apple_modified_at": "2026-03-19T00:00:00Z",
   "last_pushed_fingerprint": "sha256:...",
@@ -229,6 +385,7 @@ MVP 不建议多线程乱并发写 EventKit。
   "direction": "backend_to_apple",
   "kind": "update",
   "record_key": "task:uuid",
+  "status": "retrying",
   "attempt": 3,
   "next_retry_at": "2026-03-19T00:10:00Z",
   "last_error": "eventkit_save_failed"
@@ -289,7 +446,7 @@ AnyActiveState -> FatalError -> RequiresOperatorAction
 调用 `POST /api/sync/apple/pull`，批量提交 Apple 侧变更。
 
 ### FetchingBackendChanges
-调用 `GET /api/sync/apple/push?bridge_id=...` 拉后端待回写变更。
+调用 `POST /api/sync/apple/push` 拉后端待回写变更。
 
 ### ApplyingToApple
 将 backend change 转换为 EventKit 写操作。
@@ -443,6 +600,43 @@ MVP 可采用“窗口扫描 + 指纹比对”：
 - failed
 
 成功后统一 ack；失败则落本地重试队列。
+
+---
+
+## 8.4 当前 planner / resolver 边界建议
+
+当前 scaffold 已把主流程中的计划逻辑拆成：
+- `PullPlanning`
+- `PushPlanning`
+- `ConflictResolving`
+- `RetryScheduling`
+
+建议继续保持以下职责边界：
+
+### `SyncCoordinator`
+只负责 orchestration：
+- 调 store / client / reminder adapter
+- 组装上下文
+- 调 planner
+- apply side effects
+- persist checkpoint / mappings / pending queue
+
+### `PullPlanner`
+只负责 backend change → local action / conflict / ack 的计划计算，不直接写 EventKit。
+
+### `PushPlanner`
+只负责 reminder snapshot → remote mutation 的构建，不直接调 HTTP。
+
+### `ConflictResolver`
+只负责判断 `backendWins` / `reminderWins` / `manualReview`，不直接写存储。
+
+### `RetryScheduler`
+只负责 attempt → nextRetryAt 计算。
+
+这样做的好处是：
+- coordinator 不会继续膨胀
+- 单测可以分别覆盖 pull / push 计划
+- 后续字段级 merge、delete tombstone 规则能在 planner 层继续演化
 
 ---
 
@@ -902,13 +1096,16 @@ MVP 可在 README 中提前声明：
 
 ### 16.1.1 当前仓库内已落地的 scaffold（2026-03）
 
-`mac-sync-bridge/` 当前已经不是纯 README 骨架，已补到可编译的结构化 scaffold：
+`mac-sync-bridge/` 当前已经不是纯 README 骨架，已补到更接近真实接线的 scaffold：
 
 - `BridgeModels/Models.swift`
   - 已定义 `ReminderRecord`、`BackendTaskRecord`、`ReminderTaskMapping`
   - 已定义 `SyncCheckpoint`、`PendingOperation`、`PushTaskMutation`、`SyncPlan`、`SyncRunReport`
+  - 已补 `OperationStatus`、`PullPlanningContext`、`PushPlanningContext`
 - `BridgeCore/Protocols.swift`
   - 已定义 `ConflictResolving`、`RetryScheduling`、`DateProviding`
+  - 已进一步拆出 `PullPlanning` / `PushPlanning`
+  - 已定义 `DefaultPullPlanner` / `DefaultPushPlanner`
   - 已定义 `SyncCoordinatorDependencies`
 - `BridgeCore/SyncCoordinator.swift`
   - 已提供单轮同步主流程：load checkpoint → pull → plan → apply local → push → ack → persist checkpoint / mapping / retry queue
@@ -916,19 +1113,24 @@ MVP 可在 README 中提前声明：
   - 已定义 `ReminderStore` 协议与 `InMemoryReminderStore`
 - `HTTPClient/BackendSyncClient.swift`
   - 已定义 `BackendSyncClient` 协议与 `InMemoryBackendSyncClient`
+  - 已补 `URLSessionBackendSyncClient`、`BackendEndpointSet`、`BackendClientError`
 - `Persistence/BridgeStateStore.swift`
-  - 已定义 `BridgeStateStore` 协议、`BridgeConfiguration` 与 `InMemoryBridgeStateStore`
+  - 已定义 `BridgeStateStore` 协议、`BridgeConfiguration`
+  - 已补 `SQLiteSchemaDefinition` 与 pending operation 更新/删除接口
 - `BridgeCLI/main.swift`
   - 已支持 `doctor` / `sync-once` / `run` / `print-config`
 - `Tests/BridgeCoreTests/SyncCoordinatorTests.swift`
   - 已覆盖最小 push / pull 主链路测试
 
-也就是说，下一阶段重点已经可以从“先搭骨架”切到“把 fake/in-memory 实现替换成真实 EventKit / URLSession / SQLite 实现”。
+也就是说，下一阶段重点已经可以从“先搭骨架”切到：
+- 把 `ReminderStore` 换成真实 EventKit 实现
+- 把 `BridgeStateStore` 换成真实 SQLite/GRDB 实现
+- 用真实后端 payload 校准 `URLSessionBackendSyncClient`
 
 ## 16.2 第二批补齐
 
 1. Reminder 写回
-2. 重试队列
+2. 重试队列消费器
 3. 删除墓碑
 4. LaunchAgent 安装脚本
 5. 更详细日志 / metrics
@@ -950,6 +1152,7 @@ MVP 可在 README 中提前声明：
 - `is_all_day_due`
 - 更明确的 `updated_at` / `version` 在同步接口中的返回约定
 - 删除 / 归档的标准同步动作定义
+- `change_id` 是否稳定可 ack
 
 ## 17.2 删除语义尚未完全定稿
 
@@ -974,6 +1177,15 @@ MVP 暂按：
 - `lastModifiedDate` 是否对 Reminder 读写足够稳定
 - 删除检测最稳妥的本地策略
 - 完成状态与完成时间在不同账户类型下的表现
+
+## 17.5 当前 still-missing 的工程缺口
+
+虽然 scaffold 更真实了，但真正可联调前还缺：
+- 真实 `EKEventStore` adapter
+- 真实 SQLite migration + transaction layer
+- pending operation 的消费执行器
+- 配置装载（文件/Keychain/env）
+- request/response contract 测试
 
 ---
 
@@ -1004,4 +1216,3 @@ Mac Sync Bridge 的 MVP 应该被实现为：
 - 不乱写
 - 不重复创建
 - 能为后续产品化形态留接口
-
