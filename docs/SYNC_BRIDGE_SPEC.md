@@ -89,9 +89,28 @@ Bridge 只处理“同步所需最小语义”。
 
 MVP 建议先做：
 1. `BridgeCLI`：命令行可启动单次同步 / 前台常驻
-2. `BridgeApp`：后续再接 LaunchAgent / 菜单栏外壳
+2. `BridgeApp`：作为长期运行宿主，后续再接 LaunchAgent / 菜单栏外壳
 
 这样便于先把同步逻辑跑通。
+
+### 4.1.1 当前 BridgeApp 运行态收口（2026-03）
+
+当前代码已不再把 `BridgeApp` 视为纯占位：
+
+- 复用与 `BridgeCLI` 相同的 `BridgeRuntimeConfigurationLoader`
+- 共享同一套配置入口：`config.json` / 环境变量 / CLI flags
+- 默认启动即跑首轮 sync
+- 随后按 `syncIntervalSeconds` 进入常驻 loop
+- 当前已支持：
+  - `--once`：只跑一轮，适合 smoke test / LaunchAgent 首次联调
+  - `--max-iterations N`：限制轮数，适合本地验证 runner 行为
+
+这意味着后续 LaunchAgent 的职责可以收敛成：
+- 安装 plist
+- 传递配置路径或环境变量
+- 拉起 `BridgeApp`
+
+而不是再额外定义一套新的 runtime 主循环。
 
 ## 4.2 建议进程模型
 
@@ -383,7 +402,28 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 - 前台运行
 - 单次 sync 调试
 - 输出日志
+- `BridgeApp` 常驻 loop
 - 后续接 LaunchAgent
+
+### 5.5.0 当前 BridgeApp loop 约定（2026-03）
+
+当前 `BridgeApp` 已从纯入口占位推进到可持续运行的宿主层：
+
+- 复用 `BridgeRuntimeConfigurationLoader`，和 CLI 共享同一套配置入口
+- 启动即跑首轮 sync
+- 之后按 `syncIntervalSeconds` 进入循环
+- 单轮失败记日志，但不会直接导致宿主退出
+- 当前支持：
+  - `--once`
+  - `--max-iterations N`
+
+当前 runtime 抽象：
+- `BridgeAppRuntime`
+- `BridgeRuntimeTicking`
+- `BridgeRuntimeLogging`
+- `BridgeAppLaunchConfiguration`
+
+这层的价值在于先把“常驻 sync loop”沉到 runtime 内核，而不是放在 LaunchAgent / 菜单栏外壳里。后续外层只需要负责进程拉起、安装与可观测性，不需要重新发明同步主循环。
 
 ### 5.5.1 当前 runtime configuration 约定（2026-03）
 

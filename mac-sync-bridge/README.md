@@ -15,7 +15,8 @@ Mac Sync Bridge 是 GTD 系统的本地同步代理，负责在：
 - `SyncCoordinator` 已补到 pending operation 消费/执行边界
 - 新增 `BridgeRuntime`，把 CLI runtime config / SQLite / URLSession client / EventKit wiring 串起来
 - CLI 可跑 `doctor` / `sync-once` / `print-config`，且不再依赖 in-memory demo wiring
-- `BridgeCoreTests` + `BridgeRuntimeTests` 已覆盖主链路与配置加载优先级
+- `BridgeApp` 已从纯占位推进到可常驻 loop 的 runtime host，支持按配置周期持续触发 sync
+- `BridgeCoreTests` + `BridgeRuntimeTests` 已覆盖主链路、配置加载优先级与 BridgeApp loop 行为
 
 它还不是可直接联调完成版，但相比纯 in-memory scaffold，已经更接近“真实可接 API / SQLite / EventKit”的状态。
 
@@ -138,6 +139,25 @@ Mac Sync Bridge 是 GTD 系统的本地同步代理，负责在：
 - 默认 Reminders list / synced lists 配置
 - doctor 阶段发现 lists / 打印 sqlite path / 打印 runtime config
 
+### 6. BridgeApp：从入口占位变成可常驻 loop 的宿主
+
+这轮把 `BridgeApp` 从一句提示语推进成真正的 runtime host：
+
+- 复用 `BridgeRuntimeConfigurationLoader`，直接吃同一套 `config.json` / ENV / CLI 配置
+- 新增 `BridgeAppRuntime`
+  - 启动后立即执行一次 sync
+  - 按 `syncIntervalSeconds` 进入常驻循环
+  - 每轮记录 started / finished / failed 日志
+  - 支持 `--once` / `--max-iterations N` 方便真机 smoke test
+- 新增 `BridgeRuntimeTicking` / `BridgeRuntimeLogging`
+  - 让 loop 的 sleep / logging 行为可注入
+  - 后续接 LaunchAgent、菜单栏 host、OSLog 时不用重写主循环
+- `BridgeRuntimeTests` 新增 loop coverage
+  - 验证多轮 sync 会按 interval 休眠
+  - 验证单轮失败不会直接打断常驻 runner
+
+这一步的价值不只是“多了个 main.swift”，而是把 bridge 正式往 daemon / agent 运行态推了一层：后续 LaunchAgent 只需要负责拉起进程和传配置，不需要再重新设计核心循环。
+
 ## 当前代码结构
 
 ```text
@@ -168,12 +188,14 @@ mac-sync-bridge/
       README.md
     BridgeRuntime/
       RuntimeConfiguration.swift
+      BridgeAppRuntime.swift
   Tests/
     BridgeCoreTests/
       SyncCoordinatorTests.swift
       README.md
     BridgeRuntimeTests/
       RuntimeConfigurationTests.swift
+      BridgeAppRuntimeTests.swift
 ```
 
 ## 本地验证
@@ -186,6 +208,8 @@ swift test
 swift run bridge-cli print-config --backend-base-url http://127.0.0.1:8000
 swift run bridge-cli doctor --backend-base-url http://127.0.0.1:8000 --sqlite-path ~/Library/Application\ Support/GTD/mac-sync-bridge/bridge-state.sqlite
 swift run bridge-cli sync-once --backend-base-url http://127.0.0.1:8000 --api-token "$BRIDGE_API_TOKEN"
+swift run BridgeApp --backend-base-url http://127.0.0.1:8000 --api-token "$BRIDGE_API_TOKEN" --once
+swift run BridgeApp --backend-base-url http://127.0.0.1:8000 --api-token "$BRIDGE_API_TOKEN" --sync-interval 60 --max-iterations 3
 ```
 
 也可以把运行态配置放进默认 JSON 文件：
