@@ -33,8 +33,29 @@ class SyncApplePullChange(BaseModel):
 
 
 class SyncApplePushTask(BaseModel):
-    task_id: UUID
-    version: int
+    task_id: UUID | None = None
+    reminder_id: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=255)
+    notes: str | None = None
+    due_date: datetime | None = None
+    remind_at: datetime | None = None
+    is_all_day_due: bool = False
+    priority: int | None = Field(default=None, ge=1, le=9)
+    list_name: str | None = None
+    list_identifier: str | None = None
+    external_identifier: str | None = None
+    state: Literal["active", "completed", "deleted"]
+    fingerprint: dict
+    last_modified_at: datetime
+    backend_version_token: str | None = None
+    backend_change_id: int | None = Field(default=None, ge=1)
+
+    @property
+    def version(self) -> int:
+        if not self.backend_version_token:
+            return 0
+        digits = "".join(ch for ch in self.backend_version_token if ch.isdigit())
+        return int(digits) if digits else 0
 
 
 class SyncApplePushRequest(BaseModel):

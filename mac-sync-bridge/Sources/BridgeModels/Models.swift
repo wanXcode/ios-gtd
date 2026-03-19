@@ -354,13 +354,13 @@ public struct PushTaskMutation: Codable, Hashable, Sendable {
 public struct PushChangesRequest: Codable, Sendable {
     public var bridgeID: String
     public var cursor: String?
-    public var tasks: [PushTaskVersion]
+    public var tasks: [PushTaskMutation]
     public var limit: Int
 
     public init(
         bridgeID: String,
         cursor: String? = nil,
-        tasks: [PushTaskVersion] = [],
+        tasks: [PushTaskMutation] = [],
         limit: Int = 200
     ) {
         self.bridgeID = bridgeID

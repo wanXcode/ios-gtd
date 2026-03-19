@@ -56,13 +56,13 @@ public actor SyncCoordinator {
 
         try await applyLocalChanges(plan.localUpserts, deletes: plan.localDeletes)
 
-        let pushRequestTasks: [PushTaskVersion]
+        let pushRequestTasks: [PushTaskMutation]
         let pushResponse: PushChangesResponse
         if direction == .pull {
             pushRequestTasks = []
             pushResponse = PushChangesResponse(accepted: [], items: [])
         } else {
-            pushRequestTasks = buildPushTaskVersions(from: plan.remoteMutations)
+            pushRequestTasks = plan.remoteMutations
             pushResponse = try await dependencies.backendClient.pushChanges(
                 request: PushChangesRequest(
                     bridgeID: dependencies.bridgeID,
@@ -126,7 +126,7 @@ public actor SyncCoordinator {
             plannedPushMutationsCount: plan.remoteMutations.count,
             plannedPushMutationSummaries: plan.remoteMutations.map(Self.describe),
             pushRequestTasksCount: pushRequestTasks.count,
-            pushRequestTaskSummaries: pushRequestTasks.map(Self.describe),
+            pushRequestTaskSummaries: pushRequestTasks.map(Self.describeRequestTask),
             pushResponseAcceptedCount: pushResponse.accepted.count,
             pushResponseAcceptedSummaries: pushResponse.accepted.map(Self.describe),
             pushResponseItemsCount: pushResponse.items.count,
@@ -270,14 +270,6 @@ public actor SyncCoordinator {
         return result
     }
 
-    private func buildPushTaskVersions(from mutations: [PushTaskMutation]) -> [PushTaskVersion] {
-        mutations.compactMap { mutation in
-            guard let taskID = mutation.taskID else { return nil }
-            let version = mutation.backendVersionToken.flatMap(Self.extractVersionNumber) ?? 0
-            return PushTaskVersion(taskID: taskID, version: version)
-        }
-    }
-
     private func buildAckItems(
         taskIDs: [String],
         acceptedPushes: [PushTaskResult],
@@ -316,8 +308,8 @@ public actor SyncCoordinator {
         "reminderID=\(mutation.reminderID) taskID=\(mutation.taskID ?? "<new>") state=\(mutation.state.rawValue) title=\(mutation.title) versionToken=\(mutation.backendVersionToken ?? "<none>")"
     }
 
-    private static func describe(_ task: PushTaskVersion) -> String {
-        "taskID=\(task.taskID) version=\(task.version)"
+    private static func describeRequestTask(_ task: PushTaskMutation) -> String {
+        "reminderID=\(task.reminderID) taskID=\(task.taskID ?? "<new>") state=\(task.state.rawValue) title=\(task.title) versionToken=\(task.backendVersionToken ?? "<none>")"
     }
 
     private static func describe(_ result: PushTaskResult) -> String {

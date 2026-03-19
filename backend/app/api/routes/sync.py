@@ -411,6 +411,71 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
     if payload.cursor is not None:
         state.last_push_cursor = payload.cursor
 
+    accepted = []
+    created = 0
+    requested_versions = {item.task_id: item.version for item in payload.tasks if item.task_id is not None}
+
+    for item in payload.tasks:
+        if item.task_id is not None:
+            continue
+        existing_mapping = db.scalar(
+            select(AppleReminderMapping).where(AppleReminderMapping.apple_reminder_id == item.reminder_id)
+        )
+        if existing_mapping is not None:
+            continue
+
+        now = _now()
+        is_completed = item.state == "completed"
+        is_deleted = item.state == "deleted"
+        task = Task(
+            title=item.title,
+            note=item.notes,
+            status=TaskStatus.DELETED.value if is_deleted else (TaskStatus.COMPLETED.value if is_completed else TaskStatus.ACTIVE.value),
+            bucket=TaskBucket.DONE.value if is_completed else TaskBucket.INBOX.value,
+            priority=item.priority,
+            due_at=_normalize_dt(item.due_date),
+            remind_at=_normalize_dt(item.remind_at),
+            completed_at=_normalize_dt(item.last_modified_at) if is_completed else None,
+            deleted_at=_normalize_dt(item.last_modified_at) if is_deleted else None,
+            source="apple_sync",
+            source_ref=item.reminder_id,
+            last_modified_by="apple_sync_push",
+            is_all_day_due=item.is_all_day_due,
+            sync_pending=False,
+            sync_last_pushed_at=now,
+        )
+        db.add(task)
+        db.flush()
+
+        mapping = AppleReminderMapping(
+            task_id=task.id,
+            apple_reminder_id=item.reminder_id,
+            apple_list_id=item.list_identifier,
+            apple_calendar_id=item.list_identifier,
+            last_synced_task_version=task.version,
+            last_seen_apple_modified_at=_normalize_dt(item.last_modified_at),
+            sync_state=SyncState.DELETED.value if is_deleted else SyncState.ACTIVE.value,
+            pending_operation=None,
+            last_push_change_id=task.sync_change_id,
+            last_acked_change_id=task.sync_change_id,
+            bridge_updated_at=now,
+            last_ack_status="success",
+            last_delivery_status="acknowledged",
+            last_delivery_attempt_count=1,
+            is_deleted_on_apple=is_deleted,
+        )
+        db.add(mapping)
+        accepted.append(
+            {
+                "task_id": str(task.id),
+                "version": task.version,
+                "change_id": task.sync_change_id,
+                "operation": _mapping_operation(mapping, task),
+                "task": _serialize_push_item(task, mapping)["task"],
+            }
+        )
+        created += 1
+
     stmt = (
         select(Task, AppleReminderMapping)
         .outerjoin(AppleReminderMapping, AppleReminderMapping.task_id == Task.id)
@@ -420,7 +485,6 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
     )
     rows = list(db.execute(stmt).all())
 
-    requested_versions = {item.task_id: item.version for item in payload.tasks}
     items = []
     next_cursor = payload.cursor
     returned = 0
@@ -464,6 +528,8 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
         stats={
             "mode": "push",
             "requested": len(payload.tasks),
+            "accepted": len(accepted),
+            "created": created,
             "returned": returned,
             "cursor": payload.cursor,
             "next_cursor": next_cursor,
@@ -471,7 +537,7 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
     )
     state.last_push_cursor = next_cursor
     state.last_push_succeeded_at = _now()
-    state.last_seen_change_id = max_seen_change_id or state.last_seen_change_id
+    state.last_seen_change_id = max(max_seen_change_id, *(entry["change_id"] for entry in accepted)) if accepted else (max_seen_change_id or state.last_seen_change_id)
     db.add(state)
     db.add(run)
     db.commit()
@@ -481,6 +547,7 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
         "bridge_id": payload.bridge_id,
         "cursor": payload.cursor,
         "next_cursor": next_cursor,
+        "accepted": accepted,
         "items": items,
         "checkpoint": _serialize_bridge_state(state, db).model_dump(mode="json"),
     }

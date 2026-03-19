@@ -163,7 +163,7 @@ struct SyncCoordinatorTests {
     }
 
     @Test
-    func debugSnapshotShowsPlannedMutationsDroppedByPushRequestAssembly() async throws {
+    func debugSnapshotKeepsCreateMutationInPushRequestAssembly() async throws {
         let now = Date()
         let reminder = ReminderRecord(
             id: "r-new",
@@ -198,10 +198,12 @@ struct SyncCoordinatorTests {
         let pushedRequests = await backendClient.pushedRequests
 
         #expect(snapshot.plannedPushMutationsCount == 1)
-        #expect(snapshot.pushRequestTasksCount == 0)
-        #expect(snapshot.report.pushedCount == 0)
+        #expect(snapshot.pushRequestTasksCount == 1)
+        #expect(snapshot.report.pushedCount == 1)
         #expect(pushedRequests.count == 1)
-        #expect(pushedRequests.first?.tasks.isEmpty == true)
+        #expect(pushedRequests.first?.tasks.count == 1)
+        #expect(pushedRequests.first?.tasks.first?.taskID == nil)
+        #expect(pushedRequests.first?.tasks.first?.reminderID == "r-new")
     }
 
     @Test
@@ -336,7 +338,28 @@ private actor RecordingBackendSyncClient: BackendSyncClient {
 
     func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
         pushedRequests.append(request)
-        return PushChangesResponse(accepted: [], items: [])
+        let accepted = request.tasks.map { mutation in
+            PushTaskResult(
+                reminderID: mutation.reminderID,
+                task: BackendTaskRecord(
+                    id: mutation.taskID ?? "generated-\(mutation.reminderID)",
+                    title: mutation.title,
+                    notes: mutation.notes,
+                    dueDate: mutation.dueDate,
+                    remindAt: mutation.remindAt,
+                    isAllDayDue: mutation.isAllDayDue,
+                    priority: mutation.priority,
+                    listName: mutation.listName,
+                    state: mutation.state,
+                    updatedAt: mutation.lastModifiedAt,
+                    versionToken: mutation.backendVersionToken ?? "v1",
+                    sourceRecordID: mutation.reminderID,
+                    sourceListID: mutation.listIdentifier,
+                    sourceCalendarID: mutation.listIdentifier
+                )
+            )
+        }
+        return PushChangesResponse(accepted: accepted, items: [])
     }
 
     func ackChanges(request: AckRequest) async throws {

@@ -133,8 +133,14 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
             body: request,
             responseType: APIPushResponse.self
         )
+        let acceptedItems = (response.accepted ?? response.items).map(\.remoteEnvelope)
         let items = response.items.map(\.remoteEnvelope)
-        let accepted = items.map { PushTaskResult(reminderID: $0.task.sourceRecordID ?? $0.taskID, task: $0.task) }
+        let acceptedByReminderID = Dictionary(uniqueKeysWithValues: acceptedItems.compactMap { item in
+            item.task.sourceRecordID.map { ($0, PushTaskResult(reminderID: $0, task: item.task)) }
+        })
+        let accepted = request.tasks.compactMap { mutation in
+            acceptedByReminderID[mutation.reminderID]
+        }
         return PushChangesResponse(
             accepted: accepted,
             rejectedReminderIDs: response.rejectedReminderIDs,
@@ -233,12 +239,18 @@ public actor InMemoryBackendSyncClient: BackendSyncClient {
 
     public func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
         let items = request.tasks.compactMap { item -> RemoteTaskEnvelope? in
-            guard let task = tasks[item.taskID] else { return nil }
+            guard let taskID = item.taskID, let task = tasks[taskID] else { return nil }
+            let version = item.backendVersionToken.flatMap(Self.extractVersionNumber) ?? 0
             let changeID = cursorSequence + 1
             cursorSequence = changeID
-            return RemoteTaskEnvelope(taskID: item.taskID, version: item.version, changeID: changeID, operation: task.state == .deleted ? "delete" : "upsert", task: task)
+            return RemoteTaskEnvelope(taskID: taskID, version: version, changeID: changeID, operation: task.state == .deleted ? "delete" : "upsert", task: task)
         }
-        let accepted = items.map { PushTaskResult(reminderID: $0.task.sourceRecordID ?? $0.taskID, task: $0.task) }
+        let acceptedByReminderID = Dictionary(uniqueKeysWithValues: items.compactMap { item in
+            item.task.sourceRecordID.map { ($0, PushTaskResult(reminderID: $0, task: item.task)) }
+        })
+        let accepted = request.tasks.compactMap { mutation in
+            acceptedByReminderID[mutation.reminderID]
+        }
         return PushChangesResponse(
             accepted: accepted,
             items: items,
@@ -255,6 +267,11 @@ public actor InMemoryBackendSyncClient: BackendSyncClient {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: date)
+    }
+
+    private static func extractVersionNumber(_ versionToken: String) -> Int? {
+        let digits = versionToken.filter(\.isNumber)
+        return Int(digits)
     }
 }
 
@@ -288,6 +305,7 @@ private struct APIPullResult: Decodable {
 
 private struct APIPushResponse: Decodable {
     let mode: String
+    let accepted: [APIPushItem]?
     let items: [APIPushItem]
     let checkpoint: APICheckpoint
 

@@ -327,6 +327,47 @@ def test_sync_ack_stale_version_is_ignored_and_push_cursor_filters_duplicates(te
     assert all(entry["task_id"] != task_id for entry in filtered_push.json()["items"])
 
 
+def test_sync_push_accepts_create_mutation_without_task_id(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, _ = test_context
+
+    push = client.post(
+        "/api/sync/apple/push",
+        json={
+            "bridge_id": "bridge-create-mutation",
+            "cursor": "0",
+            "limit": 10,
+            "tasks": [
+                {
+                    "task_id": None,
+                    "reminder_id": "apple-new-1",
+                    "title": "Brand new reminder",
+                    "notes": "first push from bridge",
+                    "due_date": None,
+                    "remind_at": None,
+                    "is_all_day_due": False,
+                    "priority": None,
+                    "list_name": "Inbox",
+                    "list_identifier": "inbox",
+                    "external_identifier": "ek-apple-new-1",
+                    "state": "active",
+                    "fingerprint": {"value": "fp-apple-new-1"},
+                    "last_modified_at": "2026-03-19T08:00:00Z",
+                    "backend_version_token": None,
+                    "backend_change_id": None,
+                }
+            ],
+        },
+    )
+    assert push.status_code == 200
+    payload = push.json()
+    assert payload["mode"] == "push"
+    assert len(payload["accepted"]) == 1
+    assert payload["accepted"][0]["task"]["title"] == "Brand new reminder"
+    assert payload["accepted"][0]["task"]["source_ref"] == "apple-new-1"
+    assert payload["items"] == []
+    assert payload["checkpoint"]["last_push_cursor"] == "0"
+
+
 def test_sync_pull_conflict_path_marks_conflict_instead_of_datetime_typeerror(test_context: tuple[TestClient, sessionmaker]) -> None:
     client, TestingSessionLocal = test_context
     created = client.post("/api/tasks", json={"title": "Conflict me", "last_modified_by": "tester"}).json()

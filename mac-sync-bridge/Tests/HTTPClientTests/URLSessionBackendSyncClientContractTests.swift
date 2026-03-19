@@ -63,7 +63,21 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
                 bridgeID: "bridge-contract",
                 cursor: "push-cursor-1",
                 tasks: [
-                    PushTaskVersion(taskID: "task-backend-1", version: 8)
+                    PushTaskMutation(
+                        taskID: "task-backend-1",
+                        reminderID: "reminder-local-1",
+                        title: "Remote Inbox Task",
+                        notes: "Pulled from backend",
+                        isAllDayDue: false,
+                        listName: "Inbox",
+                        listIdentifier: "inbox",
+                        externalIdentifier: "reminder-ext-1",
+                        state: .active,
+                        fingerprint: ReminderFingerprint(value: "fp-1"),
+                        lastModifiedAt: Date(timeIntervalSince1970: 1_742_368_000),
+                        backendVersionToken: "v8",
+                        backendChangeID: 43
+                    )
                 ],
                 limit: 20
             )
@@ -78,6 +92,12 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
         XCTAssertEqual(payload?["bridge_id"] as? String, "bridge-contract")
         XCTAssertEqual(payload?["cursor"] as? String, "push-cursor-1")
         XCTAssertEqual(payload?["limit"] as? Int, 20)
+        let tasks = try XCTUnwrap(payload?["tasks"] as? [[String: Any]])
+        XCTAssertEqual(tasks.count, 1)
+        XCTAssertEqual(tasks.first?["task_id"] as? String, "task-backend-1")
+        XCTAssertEqual(tasks.first?["reminder_id"] as? String, "reminder-local-1")
+        XCTAssertEqual(tasks.first?["title"] as? String, "Remote Inbox Task")
+        XCTAssertEqual(tasks.first?["backend_version_token"] as? String, "v8")
 
         XCTAssertEqual(response.accepted.count, 1)
         XCTAssertEqual(response.items.count, 1)
@@ -241,6 +261,29 @@ private let pullFixture = #"""
 private let pushFixture = #"""
 {
   "mode": "delta",
+  "accepted": [
+    {
+      "task_id": "task-backend-1",
+      "version": 8,
+      "change_id": 43,
+      "operation": "upsert",
+      "task": {
+        "title": "Local title",
+        "note": "Changed locally",
+        "due_at": "2026-03-19T10:00:00Z",
+        "remind_at": "2026-03-19T09:45:00Z",
+        "is_all_day_due": false,
+        "priority": 2,
+        "list_name": "Inbox",
+        "source_ref": "reminder-local-1",
+        "updated_at": "2026-03-19T10:01:00Z",
+        "version": 8,
+        "change_id": 43,
+        "status": "completed",
+        "bucket": "done"
+      }
+    }
+  ],
   "items": [
     {
       "task_id": "task-backend-1",
