@@ -44,12 +44,17 @@ v0.2.0 只解决一件事：
 - `GET /api/assistant/views/today`
 - `GET /api/assistant/views/waiting`
 
-但当前 `capture` 仍是启发式解析，能力偏保守。本文定义的是 **v0.2.0 应收敛到的交互合同**。
+但要注意，**当前代码已实现的接口合同和早期规划稿并不完全一致**。目前后端真实请求/响应以 `backend/app/api/routes/assistant.py`、`backend/app/schemas/assistant.py` 和 `backend/app/services/assistant.py` 为准：
 
-也就是说：
+- 请求字段使用 `apply`，不是 `dry_run`
+- 响应顶层字段目前是 `draft / applied / created`
+- `draft` 当前包含 `intent/title/summary/note/bucket/status/due_at/remind_at/time_expression/confidence/needs_confirmation/project_*`
+- 当前**还没有** `questions`、结构化 `error_code`、多轮确认状态对象
 
-- 当前实现未覆盖的，本文作为开发目标
-- 当前实现已存在但行为不稳定的，本文作为统一标准
+因此本文现在承担两层作用：
+
+- 一层是 **当前 alpha 联调合同**：对齐现有实现，避免文档继续误导联调
+- 一层是 **v0.2.0 目标合同**：把下一步该补的追问/澄清机制写清楚
 
 ---
 
@@ -120,9 +125,11 @@ v0.2.0 只解决一件事：
 
 ### A. 明确的单动作任务
 
-默认落类：
+目标落类（按产品语义）：
 - 如果动作明确、但没有清晰时间 → `收集箱 @Inbox`
 - 如果动作明确、且时间明确、且可立即执行 → `下一步行动@NextAction`
+
+**但当前实现并没有严格按这条规则落类。** 现阶段 `_infer_bucket()` 主要只把明显的“以后再说/有空再说”归到 `someday`，其余大多数 capture 默认仍会进 backend 的 `inbox` bucket。也就是说，alpha 联调阶段应把 bucket 稳定性视为“有限可用”，不要把 `next_action` 自动判定当成当前已交付能力。
 
 特征：
 
@@ -191,9 +198,37 @@ v0.2.0 只解决一件事：
 
 ## 3.2 必须追问后再创建的输入
 
-### 当前 v0.2.0 返回合同建议
+### 当前 alpha 返回合同（已实现）
 
-当系统判断信息不足时，建议 `/api/assistant/capture` 返回至少：
+当系统判断信息不足时，当前后端**只会**返回一个带 `needs_confirmation=true` 的 `draft`，不会附带 `questions` 数组。例如当前已实现语义更接近：
+
+```json
+{
+  "draft": {
+    "intent": "create_task",
+    "title": "处理合同",
+    "summary": "处理合同",
+    "note": "下周处理合同",
+    "bucket": "inbox",
+    "status": "active",
+    "due_at": "2026-03-23T18:00:00Z",
+    "remind_at": null,
+    "time_expression": "下周",
+    "confidence": 0.78,
+    "needs_confirmation": true,
+    "project_name": null,
+    "project_description": null
+  },
+  "applied": false,
+  "created": null
+}
+```
+
+这意味着当前飞书对话层要自己根据 `needs_confirmation=true` 生成追问文案。
+
+### v0.2.0 目标返回合同建议
+
+当系统判断信息不足时，建议 `/api/assistant/capture` 后续扩展为至少：
 
 ```json
 {
@@ -467,6 +502,8 @@ v0.2.0 不追求完美 GTD 推断，但要统一最低限度规则。
 
 ### 规则 2：`提醒我` 优先产生 `remind_at`
 
+**当前实现限制：** 现阶段时间启发式会在识别到“明晚/今晚/明天/后天/今天/下周”等表达时直接给出 `due_at`，并在部分场景自动推一个 `remind_at`。这还不是稳定的人类语义建模，只能视为 alpha 近似行为。特别是“提醒我”并不总会单独只产出 `remind_at`。
+
 示例：
 
 - 明晚 8 点提醒我给张三发合同
@@ -696,13 +733,15 @@ v0.2.0 单轮最多追问 2 个问题。
 
 ## 7.3 apply 前的最小校验
 
-真正写库前，必须保证：
+**目标合同**下，真正写库前，必须保证：
 
 - `summary` 非空
 - `intent` 明确
 - 若有 `remind_at`，则时间合法
 - 若 `bucket=project`，则应写 project 流程，不要仍走普通 task create
 - 若 `needs_confirmation=true`，禁止 apply
+
+**但当前实现还没做到最后一条。** 现阶段 `AssistantService.capture()` 在 `apply=true` 时会直接调用 `_apply_draft()`，没有基于 `needs_confirmation` 再拦一次。因此这条校验目前仍主要由飞书对话层承担。
 
 建议写层前的最终 payload 至少满足：
 
@@ -725,7 +764,7 @@ v0.2.0 单轮最多追问 2 个问题。
 
 为了支撑上面的交互，建议把 `/assistant/capture` 从当前最小返回扩展为两段式语义：
 
-### 8.1 dry-run 模式：只解析不写库
+### 8.1 当前 alpha parse-only 模式：`apply=false`
 
 请求：
 
@@ -738,68 +777,81 @@ v0.2.0 单轮最多追问 2 个问题。
     "source_ref": "om_xxx",
     "actor": "assistant"
   },
-  "dry_run": true
+  "apply": false
 }
 ```
 
-响应建议：
+当前实现更接近下面这种返回：
 
 ```json
 {
   "draft": {
     "intent": "create_task",
-    "summary": "给张三发合同",
-    "description": null,
-    "due_at": "2026-03-21T20:00:00+08:00",
-    "remind_at": "2026-03-21T20:00:00+08:00",
-    "priority": null,
-    "bucket": "next",
-    "confidence": 0.94
-  },
-  "needs_confirmation": false,
-  "questions": [],
-  "dry_run": true
-}
-```
-
-### 8.2 apply 模式：确认后写库
-
-请求：
-
-```json
-{
-  "input": "明晚8点提醒我给张三发合同",
-  "context": {
-    "timezone": "Asia/Shanghai",
-    "source": "chat_ai",
-    "source_ref": "om_xxx",
-    "actor": "assistant"
-  },
-  "dry_run": false
-}
-```
-
-响应建议：
-
-```json
-{
-  "task": {
-    "id": "uuid",
     "title": "给张三发合同",
-    "bucket": "next",
+    "summary": "给张三发合同",
+    "note": "明晚8点提醒我给张三发合同",
+    "bucket": "inbox",
     "status": "active",
-    "due_at": "2026-03-21T20:00:00+08:00",
-    "remind_at": "2026-03-21T20:00:00+08:00"
+    "due_at": "2026-03-21T20:00:00Z",
+    "remind_at": "2026-03-21T18:00:00Z",
+    "time_expression": "明晚",
+    "confidence": 0.85,
+    "needs_confirmation": false,
+    "project_name": null,
+    "project_description": null
   },
+  "applied": false,
+  "created": null
+}
+```
+
+### 8.2 当前 alpha apply 模式：`apply=true`
+
+请求：
+
+```json
+{
+  "input": "明晚8点提醒我给张三发合同",
+  "context": {
+    "timezone": "Asia/Shanghai",
+    "source": "chat_ai",
+    "source_ref": "om_xxx",
+    "actor": "assistant"
+  },
+  "apply": true
+}
+```
+
+当前实现更接近下面这种返回：
+
+```json
+{
   "draft": {
     "intent": "create_task",
+    "title": "给张三发合同",
     "summary": "给张三发合同",
-    "bucket": "next",
-    "confidence": 0.94
+    "note": "明晚8点提醒我给张三发合同",
+    "bucket": "inbox",
+    "status": "active",
+    "due_at": "2026-03-21T20:00:00Z",
+    "remind_at": "2026-03-21T18:00:00Z",
+    "time_expression": "明晚",
+    "confidence": 0.85,
+    "needs_confirmation": false,
+    "project_name": null,
+    "project_description": null
   },
-  "needs_confirmation": false,
-  "questions": [],
-  "dry_run": false
+  "applied": true,
+  "created": {
+    "entity_type": "task",
+    "task_id": "uuid",
+    "task": {
+      "id": "uuid",
+      "title": "给张三发合同"
+    },
+    "project": null,
+    "project_id": null
+  }
 }
 ```
 
@@ -824,7 +876,10 @@ v0.2.0 单轮最多追问 2 个问题。
 
 ## 9. v0.2.0 验收清单
 
-以下清单建议直接进入测试用例。
+以下清单分两层：
+
+- **alpha 联调必测**：必须和当前实现一致
+- **v0.2.0 目标验收**：是下一步应补齐的产品行为
 
 ## 9.1 P0：直接创建类
 
