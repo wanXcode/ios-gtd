@@ -24,7 +24,19 @@ struct SyncCoordinatorTests {
         )
 
         let reminderStore = InMemoryReminderStore(reminders: [reminder])
-        let backendClient = InMemoryBackendSyncClient()
+        let remoteTask = BackendTaskRecord(
+            id: "t-generated",
+            title: "Buy milk",
+            notes: nil,
+            dueDate: nil,
+            state: .active,
+            updatedAt: now,
+            versionToken: "v1",
+            sourceRecordID: "r1"
+        )
+        let backendClient = StaticPushBackendSyncClient(items: [
+            RemoteTaskEnvelope(taskID: "t-generated", version: 1, changeID: 1, operation: "upsert", task: remoteTask)
+        ])
         let bridgeStore = InMemoryBridgeStateStore(
             configuration: BridgeConfiguration(backendBaseURL: URL(string: "http://127.0.0.1:8000")!)
         )
@@ -34,17 +46,18 @@ struct SyncCoordinatorTests {
                 backendClient: backendClient,
                 bridgeStore: bridgeStore,
                 conflictResolver: LastWriteWinsConflictResolver(),
-                retryScheduler: ExponentialBackoffRetryScheduler()
+                retryScheduler: ExponentialBackoffRetryScheduler(),
+                bridgeID: "test-bridge"
             )
         )
 
-        let report = try await coordinator.runSync()
+        let report = try await coordinator.runSync(direction: .push)
         let mappings = try await bridgeStore.loadMappings()
 
         #expect(report.pushedCount == 1)
         #expect(mappings.count == 1)
         #expect(mappings.first?.reminderID == "r1")
-        #expect(mappings.first?.taskID.isEmpty == false)
+        #expect(mappings.first?.taskID == "t-generated")
     }
 
     @Test
@@ -57,8 +70,9 @@ struct SyncCoordinatorTests {
             dueDate: nil,
             state: .active,
             updatedAt: now,
-            deletedAt: nil,
-            versionToken: "v2"
+            versionToken: "v2",
+            sourceRecordID: "ek-r1",
+            sourceListID: "inbox"
         )
         let mapping = ReminderTaskMapping(
             reminderID: "r1",
@@ -92,7 +106,8 @@ struct SyncCoordinatorTests {
                 backendClient: backendClient,
                 bridgeStore: bridgeStore,
                 conflictResolver: LastWriteWinsConflictResolver(),
-                retryScheduler: ExponentialBackoffRetryScheduler()
+                retryScheduler: ExponentialBackoffRetryScheduler(),
+                bridgeID: "test-bridge"
             )
         )
 
@@ -131,7 +146,8 @@ struct SyncCoordinatorTests {
                 backendClient: backendClient,
                 bridgeStore: bridgeStore,
                 conflictResolver: LastWriteWinsConflictResolver(),
-                retryScheduler: ExponentialBackoffRetryScheduler(baseDelay: 10, maxDelay: 60)
+                retryScheduler: ExponentialBackoffRetryScheduler(baseDelay: 10, maxDelay: 60),
+                bridgeID: "test-bridge"
             )
         )
 
@@ -144,6 +160,55 @@ struct SyncCoordinatorTests {
         #expect(pending.first?.entityID == "r-retry")
         #expect(pending.first?.status == .retrying)
         #expect(pending.first?.kind == .updateRemoteTask)
+    }
+
+    @Test
+    func pendingOperationsAreConsumedBeforeMainSync() async throws {
+        let now = Date()
+        let mutation = PushTaskMutation(
+            taskID: "t-pending",
+            reminderID: "r-pending",
+            title: "Pending",
+            state: .active,
+            fingerprint: ReminderFingerprint(value: "fp-pending"),
+            lastModifiedAt: now,
+            backendVersionToken: "v3"
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let pending = PendingOperation(
+            kind: .updateRemoteTask,
+            entityID: "r-pending",
+            payload: try encoder.encode(mutation),
+            status: .retrying,
+            attemptCount: 1,
+            nextRetryAt: now.addingTimeInterval(-5),
+            createdAt: now.addingTimeInterval(-60),
+            updatedAt: now.addingTimeInterval(-60)
+        )
+
+        let reminderStore = InMemoryReminderStore(reminders: [])
+        let backendClient = AcceptingPendingBackendSyncClient()
+        let bridgeStore = InMemoryBridgeStateStore(
+            configuration: BridgeConfiguration(backendBaseURL: URL(string: "http://127.0.0.1:8000")!),
+            pendingOperations: [pending]
+        )
+        let coordinator = SyncCoordinator(
+            dependencies: SyncCoordinatorDependencies(
+                reminderStore: reminderStore,
+                backendClient: backendClient,
+                bridgeStore: bridgeStore,
+                conflictResolver: LastWriteWinsConflictResolver(),
+                retryScheduler: ExponentialBackoffRetryScheduler(),
+                bridgeID: "test-bridge"
+            )
+        )
+
+        let report = try await coordinator.runSync(direction: .pull)
+        let remaining = try await bridgeStore.loadPendingOperations()
+
+        #expect(report.consumedPendingCount == 1)
+        #expect(remaining.isEmpty)
     }
 }
 
@@ -160,23 +225,58 @@ private actor RejectingBackendSyncClient: BackendSyncClient {
     }
 
     func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
-        let rejected = Set(rejectedReminderIDs)
-        let accepted = request.changes.compactMap { change -> PushTaskResult? in
-            guard !rejected.contains(change.reminderID) else { return nil }
-            return PushTaskResult(
-                reminderID: change.reminderID,
+        _ = request
+        return PushChangesResponse(accepted: [], rejectedReminderIDs: rejectedReminderIDs)
+    }
+
+    func ackChanges(request: AckRequest) async throws {
+        _ = request
+    }
+}
+
+private actor StaticPushBackendSyncClient: BackendSyncClient {
+    private let items: [RemoteTaskEnvelope]
+
+    init(items: [RemoteTaskEnvelope]) {
+        self.items = items
+    }
+
+    func pullChanges(request: PullChangesRequest) async throws -> PullChangesResponse {
+        _ = request
+        return PullChangesResponse(changes: [], nextCursor: nil, hasMore: false)
+    }
+
+    func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
+        _ = request
+        let accepted = items.map { PushTaskResult(reminderID: $0.task.sourceRecordID ?? $0.taskID, task: $0.task) }
+        return PushChangesResponse(accepted: accepted, items: items, nextCursor: items.last?.changeID.map(String.init), hasMore: false)
+    }
+
+    func ackChanges(request: AckRequest) async throws {
+        _ = request
+    }
+}
+
+private actor AcceptingPendingBackendSyncClient: BackendSyncClient {
+    func pullChanges(request: PullChangesRequest) async throws -> PullChangesResponse {
+        _ = request
+        return PullChangesResponse(changes: [], nextCursor: nil, hasMore: false)
+    }
+
+    func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
+        let accepted = request.tasks.map {
+            PushTaskResult(
+                reminderID: "r-pending",
                 task: BackendTaskRecord(
-                    id: change.taskID ?? "task-\(change.reminderID)",
-                    title: change.title,
-                    notes: change.notes,
-                    dueDate: change.dueDate,
-                    state: change.state,
-                    updatedAt: change.lastModifiedAt,
-                    versionToken: "v-accepted"
+                    id: $0.taskID,
+                    title: "Pending",
+                    state: .active,
+                    updatedAt: Date(),
+                    versionToken: "v\($0.version)"
                 )
             )
         }
-        return PushChangesResponse(accepted: accepted, rejectedReminderIDs: rejectedReminderIDs)
+        return PushChangesResponse(accepted: accepted)
     }
 
     func ackChanges(request: AckRequest) async throws {

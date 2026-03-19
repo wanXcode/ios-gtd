@@ -167,11 +167,12 @@ MVP 不建议多线程乱并发写 EventKit。
   - 非 macOS / 无 EventKit 环境下提供 stub fallback，避免其他 target 被平台依赖卡死
 
 当前实现重点是把模块边界和真实流程定型：
-- 授权 -> scan -> DTO -> upsert/delete
+- 授权 -> list discovery -> scan -> DTO -> upsert/delete
 - BridgeCore 继续只依赖 `ReminderStore` 协议，不直接碰 `EKEventStore`
+- `ReminderStore` 已补 `fetchReminderLists()`，方便 bridge 做 list mapping / doctor / 配置校验
 
 后续真机联调时主要再补：
-- 全天任务 / 时区更精细转换
+- 全天任务 / 时区更精细转换（当前已先补一个 all-day due 写回骨架）
 - `lastModifiedDate` 稳定性验证
 - 删除缺失检测策略
 - 更细的 list / bucket 映射器
@@ -213,12 +214,20 @@ MVP 不建议多线程乱并发写 EventKit。
 这层现在已经能承担真实实现的主要职责：
 - 组装 URLRequest
 - 注入 Bearer token
-- 编解码 JSON
+- 使用 snake_case 与 backend payload 对齐
+- 把 backend 当前 `pull / push / ack` 返回体转换到内部 `BridgeModels`
 - 校验 2xx 状态码
-- 暴露明确错误
+- 暴露明确错误（含 decode failure）
+
+当前已开始按 backend 真实 payload 对齐：
+- pull: `bridge_id + cursor + limit + changes[]` -> `accepted/applied/results/checkpoint`
+- push: `bridge_id + cursor + tasks[]` -> `mode/items/checkpoint`
+- ack: `bridge_id + acks[]` -> `success/checkpoint`
 
 后续联调重点不再是“是否要抽协议”，而是：
-- 最终请求/响应 payload 是否跟 backend 契约对齐
+- 最终请求/响应 payload 是否完全跟 backend 契约对齐
+- reject / partial failure 的正式返回体
+- cursor/change_id/version 的最终约定
 - 是否需要补 query/header 字段
 - 是否要加入 retry / metrics / tracing
 
@@ -407,12 +416,19 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 ```json
 {
   "backend_cursor": "cursor-123",
+  "last_pull_cursor": "cursor-123",
+  "last_push_cursor": "42",
+  "last_acked_change_id": 42,
+  "last_failed_change_id": null,
+  "last_seen_change_id": 42,
   "last_successful_sync_at": "2026-03-19T00:00:00Z",
   "last_successful_pull_at": "2026-03-19T00:00:10Z",
   "last_successful_push_at": "2026-03-19T00:00:20Z",
   "last_successful_ack_at": "2026-03-19T00:00:30Z",
   "last_apple_scan_started_at": "2026-03-19T00:00:05Z",
-  "last_sync_status": "success"
+  "last_sync_status": "success",
+  "last_error_code": null,
+  "last_error_message": null
 }
 ```
 
@@ -1183,6 +1199,7 @@ MVP 可在 README 中提前声明：
 - 在 macOS 上把 `ReminderStore` 真正接到 EventKit
 - 把 `SQLiteBridgeStateStore` 在真机上编译并补强 locked/migration 细节
 - 用真实后端 payload 校准 `URLSessionBackendSyncClient`
+- 把 pending operation executor 从“已成型边界”继续推进成真正 delivery runner
 
 ## 16.2 第二批补齐
 
@@ -1246,7 +1263,8 @@ MVP 暂按：
 
 其中最关键的是：
 - 当前环境还没有对 `EventKitReminderStore` 和 `SQLiteBridgeStateStore` 做真机编译回归
-- 现在的代码已经足够表达真实结构，但要成为“可联调版本”，还需要下一步在 macOS 上收口 API 可用性与行为差异
+- pending operation 现在已有消费/执行骨架，但还不是最终后台 delivery runner
+- 现在的代码已经足够表达真实结构，但要成为“可联调版本”，还需要下一步在 macOS 上收口 API 可用性、payload 契约与行为差异
 
 ---
 

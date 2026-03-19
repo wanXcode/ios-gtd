@@ -37,12 +37,14 @@ public struct BackendClientConfiguration: Sendable {
     private static func makeDefaultEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
+        encoder.keyEncodingStrategy = .convertToSnakeCase
         return encoder
     }
 
     private static func makeDefaultDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
         return decoder
     }
 }
@@ -74,6 +76,7 @@ public enum BackendClientError: Error, Sendable, LocalizedError {
     case unexpectedStatusCode(Int, body: String)
     case encodingFailed(String)
     case invalidURL(String)
+    case decodingFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -85,6 +88,8 @@ public enum BackendClientError: Error, Sendable, LocalizedError {
             return "Failed to encode request body: \(reason)"
         case let .invalidURL(path):
             return "Invalid URL for path: \(path)"
+        case let .decodingFailed(reason):
+            return "Failed to decode response body: \(reason)"
         }
     }
 }
@@ -105,20 +110,37 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
     }
 
     public func pullChanges(request: PullChangesRequest) async throws -> PullChangesResponse {
-        try await sendJSON(
+        let response: APIPullResponse = try await sendJSON(
             method: "POST",
             path: endpoints.pullPath,
             body: request,
-            responseType: PullChangesResponse.self
+            responseType: APIPullResponse.self
+        )
+        return PullChangesResponse(
+            accepted: response.accepted,
+            applied: response.applied,
+            changes: response.results.map(\.backendTaskRecord),
+            nextCursor: response.checkpoint.backendCursor ?? request.cursor,
+            backendCursor: response.checkpoint.backendCursor,
+            hasMore: false
         )
     }
 
     public func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
-        try await sendJSON(
+        let response: APIPushResponse = try await sendJSON(
             method: "POST",
             path: endpoints.pushPath,
             body: request,
-            responseType: PushChangesResponse.self
+            responseType: APIPushResponse.self
+        )
+        let items = response.items.map(\.remoteEnvelope)
+        let accepted = items.map { PushTaskResult(reminderID: $0.task.sourceRecordID ?? $0.taskID, task: $0.task) }
+        return PushChangesResponse(
+            accepted: accepted,
+            rejectedReminderIDs: response.rejectedReminderIDs,
+            items: items,
+            nextCursor: response.checkpoint.lastPushCursor,
+            hasMore: false
         )
     }
 
@@ -127,7 +149,7 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
             method: "POST",
             path: endpoints.ackPath,
             body: request,
-            responseType: EmptyResponse.self
+            responseType: APIAckResponse.self
         )
     }
 
@@ -180,15 +202,13 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
             throw BackendClientError.unexpectedStatusCode(httpResponse.statusCode, body: body)
         }
 
-        if ResponseBody.self == EmptyResponse.self {
-            return EmptyResponse() as! ResponseBody
+        do {
+            return try configuration.jsonDecoder.decode(ResponseBody.self, from: data)
+        } catch {
+            throw BackendClientError.decodingFailed(String(describing: error))
         }
-
-        return try configuration.jsonDecoder.decode(ResponseBody.self, from: data)
     }
 }
-
-private struct EmptyResponse: Codable {}
 
 public actor InMemoryBackendSyncClient: BackendSyncClient {
     private var tasks: [String: BackendTaskRecord]
@@ -202,34 +222,148 @@ public actor InMemoryBackendSyncClient: BackendSyncClient {
     public func pullChanges(request: PullChangesRequest) async throws -> PullChangesResponse {
         let changes = tasks.values.sorted { $0.updatedAt < $1.updatedAt }
         return PullChangesResponse(
+            accepted: request.localChanges.count,
+            applied: request.localChanges.count,
             changes: Array(changes.prefix(request.limit)),
             nextCursor: "cursor-\(cursorSequence)",
+            backendCursor: request.localChanges.last?.appleModifiedAt.map(Self.cursorString) ?? request.cursor,
             hasMore: changes.count > request.limit
         )
     }
 
     public func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
-        var accepted: [PushTaskResult] = []
-        for change in request.changes {
-            let taskID = change.taskID ?? UUID().uuidString
-            let task = BackendTaskRecord(
-                id: taskID,
-                title: change.title,
-                notes: change.notes,
-                dueDate: change.dueDate,
-                state: change.state,
-                updatedAt: change.lastModifiedAt,
-                deletedAt: change.state == .deleted ? change.lastModifiedAt : nil,
-                versionToken: "v\(cursorSequence + 1)"
-            )
-            tasks[taskID] = task
-            accepted.append(.init(reminderID: change.reminderID, task: task))
-            cursorSequence += 1
+        let items = request.tasks.compactMap { item -> RemoteTaskEnvelope? in
+            guard let task = tasks[item.taskID] else { return nil }
+            let changeID = cursorSequence + 1
+            cursorSequence = changeID
+            return RemoteTaskEnvelope(taskID: item.taskID, version: item.version, changeID: changeID, operation: task.state == .deleted ? "delete" : "upsert", task: task)
         }
-        return PushChangesResponse(accepted: accepted)
+        let accepted = items.map { PushTaskResult(reminderID: $0.task.sourceRecordID ?? $0.taskID, task: $0.task) }
+        return PushChangesResponse(
+            accepted: accepted,
+            items: items,
+            nextCursor: items.last?.changeID.map(String.init),
+            hasMore: false
+        )
     }
 
     public func ackChanges(request: AckRequest) async throws {
         _ = request
+    }
+
+    private static func cursorString(from date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+}
+
+private struct APIPullResponse: Decodable {
+    let accepted: Int
+    let applied: Int
+    let results: [APIPullResult]
+    let checkpoint: APICheckpoint
+}
+
+private struct APIPullResult: Decodable {
+    let taskId: String
+    let version: Int?
+    let result: String?
+    let reason: String?
+    let task: APIEmbeddedTask?
+
+    var backendTaskRecord: BackendTaskRecord {
+        if let task {
+            return task.backendTaskRecord(taskID: taskId, fallbackVersion: version)
+        }
+        return BackendTaskRecord(
+            id: taskId,
+            title: result ?? "remote-task",
+            state: .active,
+            updatedAt: Date(),
+            versionToken: version.map { "v\($0)" } ?? "v0"
+        )
+    }
+}
+
+private struct APIPushResponse: Decodable {
+    let mode: String
+    let items: [APIPushItem]
+    let checkpoint: APICheckpoint
+
+    var rejectedReminderIDs: [String] { [] }
+}
+
+private struct APIPushItem: Decodable {
+    let taskId: String
+    let version: Int
+    let changeId: Int?
+    let operation: String
+    let task: APIEmbeddedTask
+
+    var remoteEnvelope: RemoteTaskEnvelope {
+        RemoteTaskEnvelope(
+            taskID: taskId,
+            version: version,
+            changeID: changeId,
+            operation: operation,
+            task: task.backendTaskRecord(taskID: taskId, fallbackVersion: version, fallbackChangeID: changeId)
+        )
+    }
+}
+
+private struct APIAckResponse: Decodable {
+    let success: Int
+    let failed: Int?
+    let checkpoint: APICheckpoint?
+}
+
+private struct APICheckpoint: Decodable {
+    let backendCursor: String?
+    let lastPushCursor: String?
+    let lastAckedChangeId: Int?
+}
+
+private struct APIEmbeddedTask: Decodable {
+    let title: String
+    let note: String?
+    let dueAt: Date?
+    let remindAt: Date?
+    let isAllDayDue: Bool?
+    let priority: Int?
+    let listName: String?
+    let sourceRef: String?
+    let updatedAt: Date?
+    let version: Int?
+    let changeId: Int?
+    let deletedAt: Date?
+    let status: String?
+    let bucket: String?
+
+    func backendTaskRecord(taskID: String, fallbackVersion: Int?, fallbackChangeID: Int? = nil) -> BackendTaskRecord {
+        BackendTaskRecord(
+            id: taskID,
+            title: title,
+            notes: note,
+            dueDate: dueAt,
+            remindAt: remindAt,
+            isAllDayDue: isAllDayDue ?? false,
+            priority: priority,
+            listName: listName,
+            state: mapState(status: status, bucket: bucket, deletedAt: deletedAt),
+            updatedAt: updatedAt ?? Date(),
+            deletedAt: deletedAt,
+            versionToken: "v\(version ?? fallbackVersion ?? 0)",
+            changeID: changeId ?? fallbackChangeID,
+            sourceRecordID: sourceRef,
+            sourceListID: listName,
+            sourceCalendarID: listName
+        )
+    }
+
+    private func mapState(status: String?, bucket: String?, deletedAt: Date?) -> SyncEntityState {
+        if deletedAt != nil { return .deleted }
+        if status == "completed" || bucket == "done" { return .completed }
+        return .active
     }
 }

@@ -118,10 +118,11 @@ public actor DefaultPendingOperationExecutor: PendingOperationExecuting {
 
             do {
                 let mutation = try JSONDecoder.bridgeModelsDecoder.decode(PushTaskMutation.self, from: payload)
+                let version = mutation.backendVersionToken.flatMap(Self.extractVersionNumber) ?? 0
                 let response = try await backendClient.pushChanges(
                     request: PushChangesRequest(
                         bridgeID: "pending-replay",
-                        tasks: [],
+                        tasks: mutation.taskID.map { [PushTaskVersion(taskID: $0, version: version)] } ?? [],
                         limit: 1
                     )
                 )
@@ -153,6 +154,11 @@ public actor DefaultPendingOperationExecutor: PendingOperationExecuting {
             createdAt: operation.createdAt,
             updatedAt: now
         )
+    }
+
+    private static func extractVersionNumber(_ versionToken: String) -> Int? {
+        let digits = versionToken.filter(\.isNumber)
+        return Int(digits)
     }
 }
 

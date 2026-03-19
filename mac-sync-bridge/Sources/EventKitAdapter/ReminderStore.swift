@@ -7,6 +7,7 @@ import EventKit
 public protocol ReminderStore: Sendable {
     func authorizationStatus() async throws -> ReminderAuthorizationStatus
     func requestAccessIfNeeded() async throws -> ReminderAuthorizationStatus
+    func fetchReminderLists() async throws -> [ReminderListRecord]
     func fetchReminders() async throws -> [ReminderRecord]
     func upsert(reminders: [ReminderRecord]) async throws
     func delete(reminders: [ReminderRecord]) async throws
@@ -224,7 +225,13 @@ public actor EventKitReminderStore: EventKitReminderStoreProtocol {
             }
 
             if let dueDate = reminder.dueDate {
-                eventReminder.dueDateComponents = Calendar.current.dateComponents(in: TimeZone.current, from: dueDate)
+                var components = Calendar.current.dateComponents(in: TimeZone.current, from: dueDate)
+                if isAllDayDate(dueDate) {
+                    components.hour = nil
+                    components.minute = nil
+                    components.second = nil
+                }
+                eventReminder.dueDateComponents = components
             } else {
                 eventReminder.dueDateComponents = nil
             }
@@ -321,6 +328,11 @@ public actor EventKitReminderStore: EventKitReminderStoreProtocol {
         )
     }
 
+    private func isAllDayDate(_ date: Date) -> Bool {
+        let components = Calendar.current.dateComponents([.hour, .minute, .second], from: date)
+        return (components.hour ?? 0) == 0 && (components.minute ?? 0) == 0 && (components.second ?? 0) == 0
+    }
+
     private static func mapAuthorizationStatus(_ status: EKAuthorizationStatus) -> ReminderAuthorizationStatus {
         switch status {
         case .authorized, .fullAccess, .writeOnly:
@@ -349,6 +361,10 @@ public actor EventKitReminderStore: ReminderStore {
     }
 
     public func requestAccessIfNeeded() async throws -> ReminderAuthorizationStatus {
+        throw ReminderStoreError.eventKitUnavailable
+    }
+
+    public func fetchReminderLists() async throws -> [ReminderListRecord] {
         throw ReminderStoreError.eventKitUnavailable
     }
 
@@ -389,6 +405,11 @@ public actor InMemoryReminderStore: ReminderStore {
             authorization = .authorized
         }
         return authorization
+    }
+
+    public func fetchReminderLists() async throws -> [ReminderListRecord] {
+        let identifiers = Set(storage.values.compactMap(\.listIdentifier))
+        return identifiers.sorted().map { ReminderListRecord(identifier: $0, title: $0) }
     }
 
     public func fetchReminders() async throws -> [ReminderRecord] {
