@@ -226,6 +226,7 @@ assistant capture 合同补充：
 ### P1
 4. **在 state 或诊断接口里继续加强 delivery 可观测性**
    - 当前保留 last error 已经更好；
+   - 本轮再补了一条回归：空 `acks[]` 不应清空上一轮失败留下的 bridge 错误快照；
    - 后续可以继续补 attempt timeline / 最近失败摘要。
 
 5. **补充 README / API_SPEC 中 assistant capture 的正确示例**

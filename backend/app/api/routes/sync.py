@@ -659,7 +659,7 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
     )
     state.last_ack_succeeded_at = _now()
     state.last_acked_change_id = max_acked_change_id or state.last_acked_change_id
-    if failed == 0 and conflict == 0:
+    if payload.acks and failed == 0 and conflict == 0:
         state.last_error_code = None
         state.last_error_message = None
     db.add(state)

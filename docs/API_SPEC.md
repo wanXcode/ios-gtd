@@ -1150,6 +1150,7 @@ MVP 建议先采用保守策略：
 - `state` 是 bridge 冷启动/排障读接口，不会修改业务状态
 - `pending_delivery_count` 统计该 bridge 下当前仍未收敛的 delivery（`pending / retryable_failed / failed / conflict`）
 - `recent_deliveries[]` 返回最近 10 条 delivery 摘要，便于 bridge 启动时快速判断是否存在悬挂 write-back、冲突或失败重试
+- 若上一轮 ack 曾写入 `last_error_code / last_error_message`，后续空 `acks[]` 的心跳式 ack 不应主动清空该错误快照；只有新的成功/失败/conflict ack 结果才应推进该诊断状态，避免 bridge 误把“无新回执”看成“错误已恢复”
 
 ## 7.7 POST /sync/runs/{id}/finish
 
@@ -1484,7 +1485,7 @@ MVP 当前允许物理删除，但建议尽快切换成软删除：
 
 5. `POST /sync/runs/start`
 6. `POST /sync/apple/pull`
-7. `GET /sync/apple/push`
+7. `POST /sync/apple/push`
 8. `POST /sync/apple/ack`
 9. `POST /sync/runs/{id}/finish`
 

@@ -92,21 +92,38 @@
 接口：`POST /api/tasks/batch-update`
 建议至少创建 2 条任务后测试
 
-## 三、Sync 占位接口测试
+## 三、Sync 合同 / 回归检查
 
-这些接口目前还是“契约占位实现”，不是完整 Apple Reminders 双向同步，但应该可正常调用。
+这些接口已经不是单纯“占位 smoke”，而是桥接联调前的 backend 合同面。除了 200/不报错，更要关注 checkpoint / delivery / 错误快照是否可观测。
 
 ### 1. Apple pull
 接口：`POST /api/sync/apple/pull`
-预期：返回合理 JSON，不报错
+预期：
+- 返回 `ok=true`
+- 返回 `accepted / applied / conflicts / results[]`
+- 返回 `checkpoint.backend_cursor`
 
 ### 2. Apple push
 接口：`POST /api/sync/apple/push`
-预期：返回合理 JSON，不报错
+预期：
+- 返回 `items[]`
+- 每条 item 含 `task_id / version / change_id / operation`
+- 返回 `checkpoint.last_push_cursor`
 
 ### 3. Apple ack
 接口：`POST /api/sync/apple/ack`
-预期：返回合理 JSON，不报错
+预期：
+- 返回 `acked[] / success / failed / conflict`
+- success ack 后，`checkpoint.last_acked_change_id` 前进
+- failed/conflict ack 后，`checkpoint.last_error_code / last_error_message` 可见
+
+### 4. Apple state
+接口：`GET /api/sync/apple/state/{bridge_id}`
+预期：
+- 返回 checkpoint 持久化视图
+- 可看到 `pending_delivery_count`
+- 可看到 `recent_deliveries[]`
+- 若上一轮 ack 失败，空 `acks[]` 的后续心跳请求不应把 `last_error_code / last_error_message` 洗掉
 
 ## 四、异常检查
 

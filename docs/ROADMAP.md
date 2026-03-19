@@ -120,7 +120,7 @@ MVP 同步与管理的最小字段集：
    - 支持新增、更新、删除变更
 
 3. Push 链路（Backend -> Apple）
-   - `GET /sync/apple/push`
+   - `POST /sync/apple/push`
    - `POST /sync/apple/ack`
    - 回写成功后更新 `last_synced_task_version`
 

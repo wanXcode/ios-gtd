@@ -306,8 +306,8 @@ sync_runs (
 - 记录日志
 - 返回处理结果
 
-### GET /api/sync/apple/push?bridge_id=...
-同步桥拉取后端待下发变更
+### POST /api/sync/apple/push
+同步桥拉取后端待下发变更（请求体带 `bridge_id / cursor / tasks[] / limit`）
 
 返回：
 ```json

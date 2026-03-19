@@ -168,3 +168,52 @@ def test_stale_ack_by_change_id_is_ignored_after_success(
     )
     assert stale_ack.status_code == 200
     assert stale_ack.json()["acked"][0]["status"] == "stale_ignored"
+
+
+def test_empty_ack_does_not_clear_previous_bridge_error_snapshot(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, _ = test_context
+    created = client.post("/api/tasks", json={"title": "Keep bridge error", "last_modified_by": "tester"}).json()
+
+    push = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-error-snapshot", "cursor": "0", "limit": 10, "tasks": []},
+    )
+    assert push.status_code == 200
+    item = next(entry for entry in push.json()["items"] if entry["task_id"] == created["id"])
+
+    failed_ack = client.post(
+        "/api/sync/apple/ack",
+        json={
+            "bridge_id": "bridge-error-snapshot",
+            "acks": [
+                {
+                    "task_id": created["id"],
+                    "remote_id": "apple-error-1",
+                    "version": item["version"],
+                    "change_id": item["change_id"],
+                    "status": "failed",
+                    "retryable": True,
+                    "error_code": "timeout",
+                    "error_message": "bridge timeout",
+                }
+            ],
+        },
+    )
+    assert failed_ack.status_code == 200
+    assert failed_ack.json()["checkpoint"]["last_error_code"] == "timeout"
+
+    empty_ack = client.post(
+        "/api/sync/apple/ack",
+        json={"bridge_id": "bridge-error-snapshot", "acks": []},
+    )
+    assert empty_ack.status_code == 200
+    assert empty_ack.json()["checkpoint"]["last_error_code"] == "timeout"
+    assert empty_ack.json()["checkpoint"]["last_error_message"] == "bridge timeout"
+
+    state_response = client.get("/api/sync/apple/state/bridge-error-snapshot")
+    assert state_response.status_code == 200
+    state_payload = state_response.json()
+    assert state_payload["last_error_code"] == "timeout"
+    assert state_payload["last_error_message"] == "bridge timeout"
