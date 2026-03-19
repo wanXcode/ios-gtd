@@ -1,0 +1,32 @@
+[project]
+name = "ios-gtd-backend"
+version = "0.1.0"
+description = "MVP backend for AI + GTD + Apple Reminders sync"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.135.1",
+  "uvicorn[standard]==0.30.0",
+  "sqlalchemy==2.0.48",
+  "alembic==1.18.4",
+  "psycopg[binary]==3.3.3",
+  "pydantic-settings==2.13.1",
+  "httpcore==1.0.9",
+  "h11==0.16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.4.2",
+  "httpx==0.28.1",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
