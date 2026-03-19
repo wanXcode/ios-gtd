@@ -34,14 +34,14 @@ public struct BackendClientConfiguration: Sendable {
         self.jsonDecoder = jsonDecoder
     }
 
-    private static func makeDefaultEncoder() -> JSONEncoder {
+    static func makeDefaultEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.keyEncodingStrategy = .convertToSnakeCase
         return encoder
     }
 
-    private static func makeDefaultDecoder() -> JSONDecoder {
+    static func makeDefaultDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         decoder.keyDecodingStrategy = .convertFromSnakeCase

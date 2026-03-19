@@ -150,7 +150,7 @@ public enum SQLiteBridgeStateStoreError: Error, Sendable, LocalizedError {
     }
 }
 
-public actor SQLiteBridgeStateStore: BridgeStateStore {
+public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
     private let databaseURL: URL
     private let schemaDefinition: SQLiteSchemaDefinition
     private let defaultConfiguration: BridgeConfiguration
@@ -204,7 +204,7 @@ public actor SQLiteBridgeStateStore: BridgeStateStore {
 
     public func saveConfiguration(_ configuration: BridgeConfiguration) async throws {
         try withDatabase { database in
-            let now = Self.iso8601String(from: Date())
+            let now = Self.iso8601String(from: Date()) ?? ""
             let sql = """
             INSERT INTO bridge_configuration (
                 id,
@@ -514,7 +514,7 @@ public actor SQLiteBridgeStateStore: BridgeStateStore {
         }
     }
 
-    public func exportSQLiteSchema() -> SQLiteSchemaDefinition {
+    public nonisolated func exportSQLiteSchema() -> SQLiteSchemaDefinition {
         schemaDefinition
     }
 
@@ -580,7 +580,7 @@ public actor SQLiteBridgeStateStore: BridgeStateStore {
             let count = checkStatement.step() == .row ? checkStatement.int64(at: 0) : 0
             guard count == 0 else { return }
 
-            let now = Self.iso8601String(from: Date())
+            let now = Self.iso8601String(from: Date()) ?? ""
             let insert = try database.prepare(sql: "INSERT INTO sync_checkpoint (id, backend_cursor, last_pull_cursor, last_push_cursor, last_acked_change_id, last_failed_change_id, last_seen_change_id, last_successful_sync_at, last_successful_pull_at, last_successful_push_at, last_successful_ack_at, last_apple_scan_started_at, last_sync_status, last_error_code, last_error_message, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);")
             defer { insert.finalize() }
             insert.bind(optionalText: checkpoint.backendCursor, at: 1)
@@ -661,13 +661,13 @@ public actor SQLiteBridgeStateStore: BridgeStateStore {
         return try body(database)
     }
 
-    private static func makeDefaultEncoder() -> JSONEncoder {
+    static func makeDefaultEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }
 
-    private static func makeDefaultDecoder() -> JSONDecoder {
+    static func makeDefaultDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
@@ -697,7 +697,7 @@ public actor SQLiteBridgeStateStore: BridgeStateStore {
     }()
 }
 
-public actor InMemoryBridgeStateStore: BridgeStateStore {
+public actor InMemoryBridgeStateStore: @preconcurrency BridgeStateStore {
     private var configuration: BridgeConfiguration
     private var checkpoint: SyncCheckpoint
     private var mappingsByReminderID: [String: ReminderTaskMapping]
@@ -771,7 +771,7 @@ public actor InMemoryBridgeStateStore: BridgeStateStore {
         }
     }
 
-    public func exportSQLiteSchema() -> SQLiteSchemaDefinition {
+    public nonisolated func exportSQLiteSchema() -> SQLiteSchemaDefinition {
         schemaDefinition
     }
 }
