@@ -119,11 +119,11 @@ public actor BridgeAppRuntime {
                 break
             }
 
-            try await logger.log("bridge-app sleeping for \(Int(runtime.configuration.syncIntervalSeconds))s before next sync")
+            await logger.log("bridge-app sleeping for \(Int(runtime.configuration.syncIntervalSeconds))s before next sync")
             do {
                 try await ticker.sleep(for: runtime.configuration.syncIntervalSeconds)
             } catch is CancellationError {
-                try await logger.log("bridge-app cancelled during sleep")
+                await logger.log("bridge-app cancelled during sleep")
                 break
             }
         }
@@ -135,9 +135,9 @@ public actor BridgeAppRuntime {
     private func performIteration(iteration: Int) async -> BridgeLoopIterationResult {
         let startedAt = dateProvider.now()
         do {
-            try await logger.log("bridge-app iteration=\(iteration) sync started bridge_id=\(runtime.configuration.bridgeID)")
+            await logger.log("bridge-app iteration=\(iteration) sync started bridge_id=\(runtime.configuration.bridgeID)")
             let report = try await runtime.coordinator.runSync(direction: .bidirectional)
-            try await logger.log(
+            await logger.log(
                 "bridge-app iteration=\(iteration) sync finished pulled=\(report.pulledCount) pushed=\(report.pushedCount) acked=\(report.ackedCount) conflicts=\(report.conflictCount) retries=\(report.queuedRetryCount) pending_consumed=\(report.consumedPendingCount)"
             )
             return BridgeLoopIterationResult(

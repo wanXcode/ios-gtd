@@ -56,7 +56,7 @@ public struct EventKitReminderStoreConfiguration: Sendable {
         includeCompleted: Bool = true,
         includeDeletedInferenceCandidates: Bool = false,
         scanWindow: TimeInterval? = nil,
-        dateProvider: @escaping @Sendable () -> Date = Date.init
+        dateProvider: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.syncedListIdentifiers = syncedListIdentifiers
         self.defaultListIdentifier = defaultListIdentifier

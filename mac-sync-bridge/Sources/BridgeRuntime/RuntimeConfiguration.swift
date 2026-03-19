@@ -96,7 +96,7 @@ public enum BridgeRuntimeConfigurationError: Error, Sendable, LocalizedError {
     }
 }
 
-public struct BridgeRuntimeConfigurationLoader: Sendable {
+public struct BridgeRuntimeConfigurationLoader {
     public var environment: [String: String]
     public var fileManager: FileManager
     public var processInfoProvider: @Sendable () -> ProcessInfo
@@ -117,7 +117,7 @@ public struct BridgeRuntimeConfigurationLoader: Sendable {
         let configPath = explicitConfigPath ?? BridgeRuntimeConfiguration.defaultConfigPath
 
         var fileConfiguration: BridgeRuntimeConfiguration?
-        if let explicitConfigPath || fileManager.fileExists(atPath: expandedPath(configPath)) {
+        if explicitConfigPath != nil || fileManager.fileExists(atPath: expandedPath(configPath)) {
             fileConfiguration = try loadConfigurationFile(at: explicitConfigPath ?? configPath)
         }
 
