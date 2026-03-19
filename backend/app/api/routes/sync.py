@@ -136,6 +136,7 @@ def _get_or_create_delivery(
         operation=operation,
         status="pending",
         attempt_count=1,
+        remote_id=remote_id,
         first_pushed_at=now,
         last_pushed_at=now,
     )
@@ -177,11 +178,15 @@ def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str,
         remote_modified_at = _normalize_dt(change.apple_modified_at)
         local_updated_at = _normalize_dt(task.updated_at)
         last_seen_apple_modified_at = _normalize_dt(mapping.last_seen_apple_modified_at)
-        mapping_updated_at = _normalize_dt(mapping.updated_at)
-        if task.sync_pending and remote_modified_at and last_seen_apple_modified_at and local_updated_at and mapping_updated_at:
-            if remote_modified_at > last_seen_apple_modified_at and local_updated_at > mapping_updated_at:
+        bridge_updated_at = _normalize_dt(mapping.bridge_updated_at)
+        if task.sync_pending and remote_modified_at and last_seen_apple_modified_at and local_updated_at:
+            if remote_modified_at > last_seen_apple_modified_at and (
+                (bridge_updated_at is None or local_updated_at > bridge_updated_at)
+                or (mapping.last_acked_change_id is not None and task.sync_change_id > mapping.last_acked_change_id)
+            ):
                 mapping.sync_state = SyncState.CONFLICT.value
                 mapping.last_ack_status = "conflict"
+                mapping.last_delivery_status = "conflict"
                 mapping.last_error_code = "task_modified_after_last_sync"
                 mapping.last_error_message = "Local task changed after last sync and before remote update was applied"
                 db.add(mapping)
@@ -396,6 +401,7 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
         next_cursor = str(task.sync_change_id)
         max_seen_change_id = max(max_seen_change_id, task.sync_change_id)
         task.sync_last_pushed_at = _now()
+        previous_delivery_status = mapping.last_delivery_status if mapping else None
         delivery = _get_or_create_delivery(
             db,
             bridge_id=payload.bridge_id,
@@ -403,11 +409,12 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
             change_id=task.sync_change_id,
             version=task.version,
             operation=_mapping_operation(mapping, task),
+            remote_id=mapping.apple_reminder_id if mapping else None,
         )
         if mapping:
             mapping.pending_operation = _mapping_operation(mapping, task)
             mapping.last_push_change_id = task.sync_change_id
-            mapping.last_delivery_status = delivery.status
+            mapping.last_delivery_status = previous_delivery_status if previous_delivery_status in {"retryable_failed", "failed", "conflict"} else delivery.status
             mapping.last_delivery_attempt_count = delivery.attempt_count
             db.add(mapping)
         db.add(task)
@@ -462,12 +469,16 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
 
         mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == item.task_id))
         if not mapping and item.remote_id:
+            bootstrap_change_id = item.change_id or task.sync_change_id
             mapping = AppleReminderMapping(
                 task_id=item.task_id,
                 apple_reminder_id=item.remote_id,
                 last_synced_task_version=item.version,
                 last_seen_apple_modified_at=_normalize_dt(item.apple_modified_at),
                 sync_state=SyncState.ACTIVE.value,
+                last_push_change_id=bootstrap_change_id,
+                last_acked_change_id=bootstrap_change_id if item.status in {"success", "acked"} else None,
+                bridge_updated_at=_now(),
                 last_delivery_status="acknowledged" if item.status in {"success", "acked"} else item.status,
             )
             db.add(mapping)
@@ -478,7 +489,7 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
         if item.version > task.version:
             raise HTTPException(status_code=409, detail=f"Ack version ahead of task version for task: {item.task_id}")
 
-        ack_change_id = item.change_id or mapping.last_push_change_id or task.sync_change_id
+        ack_change_id = item.change_id or mapping.last_push_change_id or mapping.last_acked_change_id or task.sync_change_id
         if ack_change_id > task.sync_change_id:
             raise HTTPException(status_code=409, detail=f"Ack change_id ahead of task change_id for task: {item.task_id}")
         if mapping.last_acked_change_id and ack_change_id <= mapping.last_acked_change_id:
@@ -511,10 +522,21 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
                 SyncDelivery.change_id == ack_change_id,
             )
         )
-        if delivery is None and item.change_id is not None:
+        if delivery is None and item.change_id is not None and mapping.last_acked_change_id != ack_change_id:
             raise HTTPException(status_code=409, detail=f"Ack change_id not found for task: {item.task_id}")
         if delivery and item.version != delivery.task_version:
             raise HTTPException(status_code=409, detail=f"Ack version does not match delivered version for task: {item.task_id}")
+        if delivery is None and item.change_id is not None and mapping.last_acked_change_id == ack_change_id:
+            acked.append(
+                {
+                    "task_id": str(item.task_id),
+                    "remote_id": mapping.apple_reminder_id,
+                    "version": item.version,
+                    "change_id": ack_change_id,
+                    "status": "stale_ignored",
+                }
+            )
+            continue
 
         if item.remote_id:
             mapping.apple_reminder_id = item.remote_id
@@ -547,6 +569,7 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
             mapping.last_delivery_status = "acknowledged"
             mapping.last_delivery_attempt_count = delivery.attempt_count if delivery else mapping.last_delivery_attempt_count
             max_acked_change_id = max(max_acked_change_id, effective_change_id)
+            state.last_acked_change_id = max(state.last_acked_change_id or 0, effective_change_id)
             if delivery:
                 delivery.status = "acknowledged"
                 delivery.acked_at = _now()

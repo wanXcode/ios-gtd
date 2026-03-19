@@ -17,6 +17,7 @@ class SyncBridgeState(Base):
     last_pull_cursor: Mapped[str | None] = mapped_column(Text())
     last_push_cursor: Mapped[str | None] = mapped_column(Text())
     last_acked_change_id: Mapped[int | None] = mapped_column(Integer)
+    last_failed_change_id: Mapped[int | None] = mapped_column(Integer)
     last_seen_change_id: Mapped[int | None] = mapped_column(Integer)
     last_pull_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_pull_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -24,10 +24,11 @@ FastAPI + SQLAlchemy + Alembic backend for the iOS GTD MVP. This version is aime
   - `tasks.sync_pending`
   - `tasks.sync_last_pushed_at`
   - `apple_reminder_mappings.pending_operation`
-  - `apple_reminder_mappings.last_push_change_id`
-  - `apple_reminder_mappings.last_ack_status`
-  - `sync_bridge_states.backend_cursor / last_pull_cursor / last_push_cursor / last_acked_change_id`
-- Alembic migrations for initial schema + sync bridge fields + per-bridge checkpoint state
+  - `apple_reminder_mappings.last_push_change_id / last_acked_change_id`
+  - `apple_reminder_mappings.last_ack_status / last_delivery_status / last_delivery_attempt_count / last_failed_change_id`
+  - `sync_bridge_states.backend_cursor / last_pull_cursor / last_push_cursor / last_acked_change_id / last_failed_change_id`
+  - `sync_deliveries` minimal ledger for bridge delivery / retry / failure inspection
+- Alembic migrations for initial schema + sync bridge fields + per-bridge checkpoint state + delivery ledger
 - local test coverage for task lifecycle + sync pull/push/ack/idempotency checkpoint flow
 
 ## Quick start
@@ -162,12 +163,14 @@ These endpoints are now meant for real bridge bring-up, not just a placeholder s
   - supports bridge-side `cursor` filtering to avoid replaying already-seen changes in the same bridge
   - skips already-acked `last_push_change_id` payloads to reduce duplicate write-back risk
 - `POST /api/sync/apple/ack`
+  - now supports explicit `change_id` on each ack item so bridge ack semantics can bind to a specific delivered change
   - updates mapping after bridge write-back
   - clears pending state on success
   - preserves pending state on failure
   - marks mapping as conflict on conflict ack
-  - ignores stale ack versions that are older than the mapping's last synced version
-  - rejects impossible future ack versions with HTTP 409
+  - ignores stale acks when `change_id` is already acked or version is older than the mapping's last synced version
+  - rejects impossible future ack versions and unknown explicit `change_id` values with HTTP 409
+  - updates `sync_deliveries` ledger so retry / failure history is inspectable per `bridge_id + task_id + change_id`
 - `GET /api/sync/apple/state/{bridge_id}`
   - returns the backend's persisted per-bridge checkpoint / cursor snapshot
 
@@ -188,6 +191,7 @@ Covered right now:
 - sync pull / push / ack flow
 - per-bridge checkpoint persistence
 - stale ack ignore + push cursor dedupe behavior
+- explicit ack `change_id` validation + retry ledger behavior
 
 ## Docker
 
@@ -208,7 +212,7 @@ docker compose -f docker-compose.dev.yml up --build
 ## Current known gaps
 
 - backend now persists per-bridge checkpoint state, but bridge identity still has no auth binding / device credential model
-- no dedicated retry queue table on backend side yet; retry scheduling is still mostly bridge-owned
+- backend now keeps a minimal delivery ledger, but retry scheduling / backoff policy is still mostly bridge-owned
 - no pagination yet on task listing
 - no dedicated operation log query API yet
 - no production infra manifests yet

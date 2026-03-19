@@ -47,6 +47,7 @@ class SyncAppleAckItem(BaseModel):
     task_id: UUID
     remote_id: str | None = None
     version: int
+    change_id: int | None = Field(default=None, ge=1)
     status: str = Field(default="success", pattern="^(success|failed|conflict|acked)$")
     apple_modified_at: datetime | None = None
     apple_list_id: str | None = None
@@ -67,6 +68,7 @@ class SyncBridgeStateRead(BaseModel):
     last_pull_cursor: str | None = None
     last_push_cursor: str | None = None
     last_acked_change_id: int | None = None
+    last_failed_change_id: int | None = None
     last_seen_change_id: int | None = None
     last_pull_started_at: datetime | None = None
     last_pull_succeeded_at: datetime | None = None
