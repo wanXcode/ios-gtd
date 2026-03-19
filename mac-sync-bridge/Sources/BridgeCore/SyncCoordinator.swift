@@ -7,11 +7,31 @@ import Persistence
 public actor SyncCoordinator {
     private let dependencies: SyncCoordinatorDependencies
 
+    public struct SyncDebugSnapshot: Sendable {
+        public let checkpoint: SyncCheckpoint
+        public let pulledCount: Int
+        public let plannedPushMutationsCount: Int
+        public let plannedPushMutationSummaries: [String]
+        public let pushRequestTasksCount: Int
+        public let pushRequestTaskSummaries: [String]
+        public let pushResponseAcceptedCount: Int
+        public let pushResponseAcceptedSummaries: [String]
+        public let pushResponseItemsCount: Int
+        public let pushResponseItemSummaries: [String]
+        public let ackItemsCount: Int
+        public let ackItemSummaries: [String]
+        public let report: SyncRunReport
+    }
+
     public init(dependencies: SyncCoordinatorDependencies) {
         self.dependencies = dependencies
     }
 
     public func runSync(direction: SyncDirection = .bidirectional) async throws -> SyncRunReport {
+        try await runSyncWithDebug(direction: direction).report
+    }
+
+    public func runSyncWithDebug(direction: SyncDirection = .bidirectional) async throws -> SyncDebugSnapshot {
         let startedAt = dependencies.dateProvider.now()
 
         let checkpoint = try await dependencies.bridgeStore.loadCheckpoint()
@@ -36,16 +56,18 @@ public actor SyncCoordinator {
 
         try await applyLocalChanges(plan.localUpserts, deletes: plan.localDeletes)
 
+        let pushRequestTasks: [PushTaskVersion]
         let pushResponse: PushChangesResponse
         if direction == .pull {
+            pushRequestTasks = []
             pushResponse = PushChangesResponse(accepted: [], items: [])
         } else {
-            let remoteVersions = buildPushTaskVersions(from: plan.remoteMutations)
+            pushRequestTasks = buildPushTaskVersions(from: plan.remoteMutations)
             pushResponse = try await dependencies.backendClient.pushChanges(
                 request: PushChangesRequest(
                     bridgeID: dependencies.bridgeID,
                     cursor: checkpoint.lastPushCursor,
-                    tasks: remoteVersions
+                    tasks: pushRequestTasks
                 )
             )
         }
@@ -87,7 +109,7 @@ public actor SyncCoordinator {
 
         let queuedRetryCount = try await queueRejectedMutations(pushResponse.rejectedReminderIDs, from: plan.remoteMutations)
 
-        return SyncRunReport(
+        let report = SyncRunReport(
             startedAt: startedAt,
             finishedAt: finishedAt,
             pulledCount: pulled.changes.count,
@@ -96,6 +118,22 @@ public actor SyncCoordinator {
             conflictCount: plan.conflicts.count,
             queuedRetryCount: queuedRetryCount,
             consumedPendingCount: pendingResult.completedIDs.count
+        )
+
+        return SyncDebugSnapshot(
+            checkpoint: checkpoint,
+            pulledCount: pulled.changes.count,
+            plannedPushMutationsCount: plan.remoteMutations.count,
+            plannedPushMutationSummaries: plan.remoteMutations.map(Self.describe),
+            pushRequestTasksCount: pushRequestTasks.count,
+            pushRequestTaskSummaries: pushRequestTasks.map(Self.describe),
+            pushResponseAcceptedCount: pushResponse.accepted.count,
+            pushResponseAcceptedSummaries: pushResponse.accepted.map(Self.describe),
+            pushResponseItemsCount: pushResponse.items.count,
+            pushResponseItemSummaries: pushResponse.items.map(Self.describe),
+            ackItemsCount: ackItems.count,
+            ackItemSummaries: ackItems.map(Self.describe),
+            report: report
         )
     }
 
@@ -272,5 +310,25 @@ public actor SyncCoordinator {
         guard let versionToken else { return nil }
         let digits = versionToken.filter(\.isNumber)
         return Int(digits)
+    }
+
+    private static func describe(_ mutation: PushTaskMutation) -> String {
+        "reminderID=\(mutation.reminderID) taskID=\(mutation.taskID ?? "<new>") state=\(mutation.state.rawValue) title=\(mutation.title) versionToken=\(mutation.backendVersionToken ?? "<none>")"
+    }
+
+    private static func describe(_ task: PushTaskVersion) -> String {
+        "taskID=\(task.taskID) version=\(task.version)"
+    }
+
+    private static func describe(_ result: PushTaskResult) -> String {
+        "reminderID=\(result.reminderID) taskID=\(result.task.id) state=\(result.task.state.rawValue) versionToken=\(result.task.versionToken)"
+    }
+
+    private static func describe(_ item: RemoteTaskEnvelope) -> String {
+        "taskID=\(item.taskID) changeID=\(item.changeID.map(String.init) ?? "<none>") version=\(item.version) operation=\(item.operation)"
+    }
+
+    private static func describe(_ ack: AckItem) -> String {
+        "taskID=\(ack.taskID) changeID=\(ack.changeID.map(String.init) ?? "<none>") version=\(ack.version) status=\(ack.status)"
     }
 }

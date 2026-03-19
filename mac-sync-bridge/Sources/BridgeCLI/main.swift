@@ -1,3 +1,4 @@
+import BridgeCore
 import BridgeModels
 import BridgeRuntime
 import Foundation
@@ -21,6 +22,8 @@ struct BridgeCLIApp {
                 try await runInspectReminders(configuration: configuration)
             case "inspect-sync":
                 try await runInspectSync(configuration: configuration)
+            case "debug-sync", "sync-debug":
+                try await runDebugSync(configuration: configuration)
             case "sync-once", "run":
                 try await runSyncOnce(configuration: configuration)
             case "print-config":
@@ -73,6 +76,32 @@ struct BridgeCLIApp {
         let runtime = try await BridgeRuntimeConfigurationLoader().makeRuntime(configuration: configuration)
         let report = try await runtime.coordinator.runSync(direction: .bidirectional)
         print("sync finished bridge_id=\(configuration.bridgeID) pulled=\(report.pulledCount) pushed=\(report.pushedCount) acked=\(report.ackedCount) conflicts=\(report.conflictCount) retries=\(report.queuedRetryCount) pending_consumed=\(report.consumedPendingCount)")
+    }
+
+    private static func runDebugSync(configuration: BridgeRuntimeConfiguration) async throws {
+        let runtime = try await BridgeRuntimeConfigurationLoader().makeRuntime(configuration: configuration)
+        let snapshot = try await runtime.coordinator.runSyncWithDebug(direction: .bidirectional)
+
+        print("bridge_id=\(configuration.bridgeID)")
+        print("backend=\(configuration.backendBaseURL.absoluteString)")
+        print("sqlite=\(configuration.sqliteURL.path)")
+        print("planned_push_mutations_count=\(snapshot.plannedPushMutationsCount)")
+        print("push_request_tasks_count=\(snapshot.pushRequestTasksCount)")
+        print("push_response_accepted_count=\(snapshot.pushResponseAcceptedCount)")
+        print("push_response_items_count=\(snapshot.pushResponseItemsCount)")
+        print("ack_items_count=\(snapshot.ackItemsCount)")
+        print("report_pulled=\(snapshot.report.pulledCount)")
+        print("report_pushed=\(snapshot.report.pushedCount)")
+        print("report_acked=\(snapshot.report.ackedCount)")
+        print("report_conflicts=\(snapshot.report.conflictCount)")
+        print("report_retries=\(snapshot.report.queuedRetryCount)")
+        print("report_pending_consumed=\(snapshot.report.consumedPendingCount)")
+
+        printSummaryBlock(title: "planned_push_mutations", lines: snapshot.plannedPushMutationSummaries)
+        printSummaryBlock(title: "push_request_tasks", lines: snapshot.pushRequestTaskSummaries)
+        printSummaryBlock(title: "push_response_accepted", lines: snapshot.pushResponseAcceptedSummaries)
+        printSummaryBlock(title: "push_response_items", lines: snapshot.pushResponseItemSummaries)
+        printSummaryBlock(title: "ack_items", lines: snapshot.ackItemSummaries)
     }
 
     private static func runInspectReminders(configuration: BridgeRuntimeConfiguration) async throws {
@@ -219,6 +248,15 @@ struct BridgeCLIApp {
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\n", with: "\\n")
         return "\"\(escaped)\""
+    }
+
+    private static func printSummaryBlock(title: String, lines: [String]) {
+        print("\(title)_count=\(lines.count)")
+        guard !lines.isEmpty else { return }
+        print("\(title):")
+        for line in lines {
+            print("  \(line)")
+        }
     }
 
     private static func printConfig(configuration: BridgeRuntimeConfiguration) throws {

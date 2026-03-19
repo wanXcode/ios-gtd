@@ -163,6 +163,48 @@ struct SyncCoordinatorTests {
     }
 
     @Test
+    func debugSnapshotShowsPlannedMutationsDroppedByPushRequestAssembly() async throws {
+        let now = Date()
+        let reminder = ReminderRecord(
+            id: "r-new",
+            externalIdentifier: "ek-r-new",
+            title: "New local reminder",
+            notes: "not mapped yet",
+            dueDate: nil,
+            isCompleted: false,
+            isDeleted: false,
+            listIdentifier: "inbox",
+            lastModifiedAt: now,
+            fingerprint: ReminderFingerprint(value: "fp-r-new-v1")
+        )
+
+        let reminderStore = InMemoryReminderStore(reminders: [reminder])
+        let backendClient = RecordingBackendSyncClient()
+        let bridgeStore = InMemoryBridgeStateStore(
+            configuration: BridgeConfiguration(backendBaseURL: URL(string: "http://127.0.0.1:8000")!)
+        )
+        let coordinator = SyncCoordinator(
+            dependencies: SyncCoordinatorDependencies(
+                reminderStore: reminderStore,
+                backendClient: backendClient,
+                bridgeStore: bridgeStore,
+                conflictResolver: LastWriteWinsConflictResolver(),
+                retryScheduler: ExponentialBackoffRetryScheduler(),
+                bridgeID: "test-bridge"
+            )
+        )
+
+        let snapshot = try await coordinator.runSyncWithDebug(direction: .push)
+        let pushedRequests = await backendClient.pushedRequests
+
+        #expect(snapshot.plannedPushMutationsCount == 1)
+        #expect(snapshot.pushRequestTasksCount == 0)
+        #expect(snapshot.report.pushedCount == 0)
+        #expect(pushedRequests.count == 1)
+        #expect(pushedRequests.first?.tasks.isEmpty == true)
+    }
+
+    @Test
     func pendingOperationsAreConsumedBeforeMainSync() async throws {
         let now = Date()
         let mutation = PushTaskMutation(
@@ -277,6 +319,24 @@ private actor AcceptingPendingBackendSyncClient: BackendSyncClient {
             )
         }
         return PushChangesResponse(accepted: accepted)
+    }
+
+    func ackChanges(request: AckRequest) async throws {
+        _ = request
+    }
+}
+
+private actor RecordingBackendSyncClient: BackendSyncClient {
+    private(set) var pushedRequests: [PushChangesRequest] = []
+
+    func pullChanges(request: PullChangesRequest) async throws -> PullChangesResponse {
+        _ = request
+        return PullChangesResponse(changes: [], nextCursor: nil, hasMore: false)
+    }
+
+    func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
+        pushedRequests.append(request)
+        return PushChangesResponse(accepted: [], items: [])
     }
 
     func ackChanges(request: AckRequest) async throws {
