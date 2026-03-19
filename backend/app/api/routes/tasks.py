@@ -11,6 +11,7 @@ from app.models.operation_log import OperationLog
 from app.models.tag import Tag
 from app.models.task import Task
 from app.schemas.task import TaskBatchUpdateRequest, TaskCreate, TaskRead, TaskUpdate
+from app.utils_datetime import isoformat_z
 
 router = APIRouter()
 
@@ -44,10 +45,10 @@ def _serialize_task(task: Task) -> dict:
         "priority": task.priority,
         "project_id": str(task.project_id) if task.project_id else None,
         "tag_ids": [str(tag.id) for tag in task.tags],
-        "due_at": task.due_at.isoformat() if task.due_at else None,
-        "remind_at": task.remind_at.isoformat() if task.remind_at else None,
-        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "deleted_at": task.deleted_at.isoformat() if task.deleted_at else None,
+        "due_at": isoformat_z(task.due_at),
+        "remind_at": isoformat_z(task.remind_at),
+        "completed_at": isoformat_z(task.completed_at),
+        "deleted_at": isoformat_z(task.deleted_at),
         "version": task.version,
         "sync_change_id": task.sync_change_id,
         "sync_pending": task.sync_pending,

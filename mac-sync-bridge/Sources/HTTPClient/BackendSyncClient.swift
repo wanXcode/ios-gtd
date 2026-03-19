@@ -166,11 +166,8 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
         )
         let acceptedItems = (response.accepted ?? response.items).map(\.remoteEnvelope)
         let items = response.items.map(\.remoteEnvelope)
-        let acceptedByReminderID = Dictionary(uniqueKeysWithValues: acceptedItems.compactMap { item in
-            item.task.sourceRecordID.map { ($0, PushTaskResult(reminderID: $0, task: item.task)) }
-        })
-        let accepted = request.tasks.compactMap { mutation in
-            acceptedByReminderID[mutation.reminderID]
+        let accepted: [PushTaskResult] = zip(request.tasks, acceptedItems).map { mutation, item in
+            PushTaskResult(reminderID: mutation.reminderID, task: item.task)
         }
         return PushChangesResponse(
             accepted: accepted,
@@ -276,11 +273,8 @@ public actor InMemoryBackendSyncClient: BackendSyncClient {
             cursorSequence = changeID
             return RemoteTaskEnvelope(taskID: taskID, version: version, changeID: changeID, operation: task.state == .deleted ? "delete" : "upsert", task: task)
         }
-        let acceptedByReminderID = Dictionary(uniqueKeysWithValues: items.compactMap { item in
-            item.task.sourceRecordID.map { ($0, PushTaskResult(reminderID: $0, task: item.task)) }
-        })
-        let accepted = request.tasks.compactMap { mutation in
-            acceptedByReminderID[mutation.reminderID]
+        let accepted: [PushTaskResult] = zip(request.tasks, items).map { mutation, item in
+            PushTaskResult(reminderID: mutation.reminderID, task: item.task)
         }
         return PushChangesResponse(
             accepted: accepted,

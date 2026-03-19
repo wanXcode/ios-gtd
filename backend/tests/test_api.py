@@ -135,7 +135,7 @@ def test_sync_pull_push_ack_flow(test_context: tuple[TestClient, sessionmaker]) 
     pull_payload = remote_pull.json()
     assert pull_payload["accepted"] == 1
     assert pull_payload["applied"] == 1
-    assert pull_payload["checkpoint"]["backend_cursor"] == "2026-03-19T04:00:00+00:00"
+    assert pull_payload["checkpoint"]["backend_cursor"] == "2026-03-19T04:00:00Z"
     task_id = pull_payload["results"][0]["task_id"]
 
     fetched = client.get(f"/api/tasks/{task_id}", params={"include_deleted": True}).json()
@@ -204,7 +204,7 @@ def test_sync_pull_push_ack_flow(test_context: tuple[TestClient, sessionmaker]) 
         assert delivery is not None
         assert delivery.status == "acknowledged"
         assert delivery.task_version == item["version"]
-        assert state.backend_cursor == "2026-03-19T04:00:00+00:00"
+        assert state.backend_cursor == "2026-03-19T04:00:00Z"
         assert int(state.last_push_cursor) >= item["change_id"]
         assert state.last_acked_change_id >= item["change_id"]
 
@@ -366,6 +366,47 @@ def test_sync_push_accepts_create_mutation_without_task_id(test_context: tuple[T
     assert payload["accepted"][0]["task"]["source_ref"] == "apple-new-1"
     assert payload["items"] == []
     assert payload["checkpoint"]["last_push_cursor"] == "0"
+
+
+def test_sync_push_serializes_dates_with_utc_z_suffix(test_context: tuple[TestClient, sessionmaker]) -> None:
+    client, _ = test_context
+
+    push = client.post(
+        "/api/sync/apple/push",
+        json={
+            "bridge_id": "bridge-create-zulu",
+            "cursor": "0",
+            "limit": 10,
+            "tasks": [
+                {
+                    "task_id": None,
+                    "reminder_id": "apple-new-z-1",
+                    "title": "Brand new reminder zulu",
+                    "notes": "first push from bridge",
+                    "due_date": "2026-03-19T10:00:00",
+                    "remind_at": "2026-03-19T09:45:00.200718",
+                    "is_all_day_due": False,
+                    "priority": None,
+                    "list_name": "Inbox",
+                    "list_identifier": "inbox",
+                    "external_identifier": "ek-apple-new-z-1",
+                    "state": "active",
+                    "fingerprint": {"value": "fp-apple-new-z-1"},
+                    "last_modified_at": "2026-03-19T16:54:04.200718",
+                    "backend_version_token": None,
+                    "backend_change_id": None,
+                }
+            ],
+        },
+    )
+    assert push.status_code == 200
+    payload = push.json()
+    accepted_task = payload["accepted"][0]["task"]
+    assert accepted_task["due_at"] == "2026-03-19T10:00:00Z"
+    assert accepted_task["remind_at"] == "2026-03-19T09:45:00.200718Z"
+    assert accepted_task["updated_at"].endswith("Z")
+    assert payload["checkpoint"]["created_at"].endswith("Z")
+    assert payload["checkpoint"]["updated_at"].endswith("Z")
 
 
 def test_sync_pull_conflict_path_marks_conflict_instead_of_datetime_typeerror(test_context: tuple[TestClient, sessionmaker]) -> None:

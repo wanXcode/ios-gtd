@@ -19,6 +19,7 @@ from app.schemas.sync import (
     SyncBridgeDeliverySummary,
     SyncBridgeStateRead,
 )
+from app.utils_datetime import isoformat_z, normalize_utc
 
 router = APIRouter()
 
@@ -28,11 +29,7 @@ def _now() -> datetime:
 
 
 def _normalize_dt(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+    return normalize_utc(value)
 
 
 def _task_operation(task: Task) -> str:
@@ -69,7 +66,7 @@ def _serialize_push_item(task: Task, mapping: AppleReminderMapping | None) -> di
             "last_delivery_status": mapping.last_delivery_status if mapping else None,
             "last_delivery_attempt_count": mapping.last_delivery_attempt_count if mapping else None,
             "last_failed_change_id": mapping.last_failed_change_id if mapping else None,
-            "bridge_updated_at": mapping.bridge_updated_at.isoformat() if mapping and mapping.bridge_updated_at else None,
+            "bridge_updated_at": isoformat_z(mapping.bridge_updated_at) if mapping else None,
         },
         "task": {
             "title": task.title,
@@ -77,11 +74,11 @@ def _serialize_push_item(task: Task, mapping: AppleReminderMapping | None) -> di
             "status": task.status,
             "bucket": task.bucket,
             "priority": task.priority,
-            "due_at": task.due_at.isoformat() if task.due_at else None,
-            "remind_at": task.remind_at.isoformat() if task.remind_at else None,
-            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-            "deleted_at": task.deleted_at.isoformat() if task.deleted_at else None,
-            "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+            "due_at": isoformat_z(task.due_at),
+            "remind_at": isoformat_z(task.remind_at),
+            "completed_at": isoformat_z(task.completed_at),
+            "deleted_at": isoformat_z(task.deleted_at),
+            "updated_at": isoformat_z(task.updated_at),
             "is_all_day_due": task.is_all_day_due,
             "source": task.source,
             "source_ref": task.source_ref,
@@ -370,7 +367,7 @@ def apple_pull(payload: SyncApplePullRequest, db: Session = Depends(get_db)) -> 
                 "reason": reason,
             }
         )
-        next_cursor = change.apple_modified_at.isoformat() if change.apple_modified_at else next_cursor
+        next_cursor = isoformat_z(change.apple_modified_at) if change.apple_modified_at else next_cursor
 
     run.status = "success"
     run.finished_at = _now()

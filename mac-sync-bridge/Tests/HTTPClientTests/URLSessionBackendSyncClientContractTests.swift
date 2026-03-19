@@ -124,6 +124,45 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
         XCTAssertEqual(accepted.task.id, "task-backend-1")
     }
 
+    func testPushChangesAcceptsBackendDatesWithoutZuluSuffix() async throws {
+        let session = StubURLSession(response: .http(statusCode: 200), data: pushFixtureWithoutZulu.data(using: .utf8)!)
+        let client = makeClient(session: session)
+
+        let response = try await client.pushChanges(
+            request: PushChangesRequest(
+                bridgeID: "bridge-contract",
+                cursor: "push-cursor-1",
+                tasks: [
+                    PushTaskMutation(
+                        taskID: nil,
+                        reminderID: "reminder-local-created-1",
+                        title: "Created locally",
+                        notes: "Needs backend-created task id",
+                        isAllDayDue: false,
+                        listName: "Inbox",
+                        listIdentifier: "inbox",
+                        externalIdentifier: "reminder-ext-created-1",
+                        state: .active,
+                        fingerprint: ReminderFingerprint(value: "fp-created-1"),
+                        lastModifiedAt: Date(timeIntervalSince1970: 1_742_368_000),
+                        backendVersionToken: nil,
+                        backendChangeID: nil
+                    )
+                ],
+                limit: 20
+            )
+        )
+
+        XCTAssertEqual(response.accepted.count, 1)
+        XCTAssertEqual(response.items.count, 1)
+        XCTAssertEqual(response.accepted.first?.reminderID, "reminder-local-created-1")
+        XCTAssertEqual(response.accepted.first?.task.id, "task-backend-created-1")
+        XCTAssertEqual(response.accepted.first?.task.versionToken, "v1")
+        XCTAssertEqual(response.accepted.first?.task.sourceRecordID, "reminder-local-created-1")
+        XCTAssertEqual(response.items.first?.task.updatedAt.timeIntervalSince1970, 1_774_941_244.200718, accuracy: 0.001)
+        XCTAssertEqual(response.items.first?.task.dueDate?.timeIntervalSince1970, 1_774_912_400, accuracy: 0.001)
+    }
+
     func testAckChangesSendsExpectedPayloadAndAcceptsCheckpointEnvelope() async throws {
         let session = StubURLSession(response: .http(statusCode: 200), data: ackFixture.data(using: .utf8)!)
         let client = makeClient(session: session)
@@ -322,6 +361,63 @@ private let ackFixture = #"""
   "checkpoint": {
     "backend_cursor": "cursor-43",
     "last_push_cursor": "cursor-push-9",
+    "last_acked_change_id": 43
+  }
+}
+"""#
+
+private let pushFixtureWithoutZulu = #"""
+{
+  "mode": "delta",
+  "accepted": [
+    {
+      "task_id": "task-backend-created-1",
+      "version": 1,
+      "change_id": 44,
+      "operation": "upsert",
+      "task": {
+        "title": "Created locally",
+        "note": "Needs backend-created task id",
+        "due_at": "2026-03-19T10:00:00",
+        "remind_at": "2026-03-19T09:45:00",
+        "is_all_day_due": false,
+        "priority": 2,
+        "list_name": "Inbox",
+        "source_ref": "reminder-local-created-1",
+        "updated_at": "2026-03-19T16:54:04.200718",
+        "version": 1,
+        "change_id": 44,
+        "status": "active",
+        "bucket": "inbox"
+      }
+    }
+  ],
+  "items": [
+    {
+      "task_id": "task-backend-created-1",
+      "version": 1,
+      "change_id": 44,
+      "operation": "upsert",
+      "task": {
+        "title": "Created locally",
+        "note": "Needs backend-created task id",
+        "due_at": "2026-03-19T10:00:00",
+        "remind_at": "2026-03-19T09:45:00",
+        "is_all_day_due": false,
+        "priority": 2,
+        "list_name": "Inbox",
+        "source_ref": "reminder-local-created-1",
+        "updated_at": "2026-03-19T16:54:04.200718",
+        "version": 1,
+        "change_id": 44,
+        "status": "active",
+        "bucket": "inbox"
+      }
+    }
+  ],
+  "checkpoint": {
+    "backend_cursor": "2026-03-19T16:54:04.200718",
+    "last_push_cursor": "44",
     "last_acked_change_id": 43
   }
 }

@@ -199,7 +199,9 @@ struct SyncCoordinatorTests {
 
         #expect(snapshot.plannedPushMutationsCount == 1)
         #expect(snapshot.pushRequestTasksCount == 1)
+        #expect(snapshot.pushResponseAcceptedCount == 1)
         #expect(snapshot.report.pushedCount == 1)
+        #expect(snapshot.pushResponseAcceptedSummaries.first?.contains("reminderID=r-new") == true)
         #expect(pushedRequests.count == 1)
         #expect(pushedRequests.first?.tasks.count == 1)
         #expect(pushedRequests.first?.tasks.first?.taskID == nil)
