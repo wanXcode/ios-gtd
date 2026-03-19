@@ -92,11 +92,12 @@ struct BridgeCLIApp {
     }
 
     private static func format(reminder: ReminderRecord) -> String {
-        [
+        let listIdentifier = reminder.listIdentifier ?? "<none>"
+        return [
             "id=\(shellEscaped(reminder.id))",
             "externalIdentifier=\(shellEscaped(reminder.externalIdentifier))",
             "title=\(shellEscaped(reminder.title))",
-            "listIdentifier=\(shellEscaped(reminder.listIdentifier ?? \"<none>\"))",
+            "listIdentifier=\(shellEscaped(listIdentifier))",
             "isCompleted=\(reminder.isCompleted)",
             "isDeleted=\(reminder.isDeleted)",
             "lastModifiedAt=\(iso8601String(from: reminder.lastModifiedAt))"
