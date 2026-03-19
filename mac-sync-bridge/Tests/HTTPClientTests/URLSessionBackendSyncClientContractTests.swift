@@ -20,7 +20,8 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
             )
         )
 
-        let request = try XCTUnwrap(await session.getLastRequest())
+        let lastRequest = await session.getLastRequest()
+        let request = try XCTUnwrap(lastRequest)
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.url?.path, "/api/sync/apple/pull")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
@@ -68,7 +69,8 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
             )
         )
 
-        let request = try XCTUnwrap(await session.getLastRequest())
+        let lastRequest = await session.getLastRequest()
+        let request = try XCTUnwrap(lastRequest)
         XCTAssertEqual(request.url?.path, "/api/sync/apple/push")
 
         let requestBody = try XCTUnwrap(request.httpBody)
@@ -115,7 +117,8 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
             )
         )
 
-        let request = try XCTUnwrap(await session.getLastRequest())
+        let lastRequest = await session.getLastRequest()
+        let request = try XCTUnwrap(lastRequest)
         XCTAssertEqual(request.url?.path, "/api/sync/apple/ack")
         let requestBody = try XCTUnwrap(request.httpBody)
         let payload = try JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
