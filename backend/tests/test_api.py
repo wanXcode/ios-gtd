@@ -136,3 +136,92 @@ def test_sync_placeholders() -> None:
     assert ack.status_code == 200
     assert ack.json()["mode"] == "ack"
     assert ack.json()["acked"][0]["remote_id"] == "apple-1"
+
+
+def test_assistant_capture_dry_run_and_persist() -> None:
+    dry_run = client.post(
+        "/api/assistant/capture",
+        json={
+            "input": "明天提醒我发合同",
+            "context": {"timezone": "Asia/Shanghai", "source": "chat", "source_ref": "msg-1", "actor": "tester"},
+            "dry_run": True,
+        },
+    )
+    assert dry_run.status_code == 200
+    dry_payload = dry_run.json()
+    assert dry_payload["dry_run"] is True
+    assert dry_payload["task"] is None
+    assert dry_payload["parsed"]["title"] == "发合同"
+    assert dry_payload["parsed"]["due_at"] is not None
+
+    persisted = client.post(
+        "/api/assistant/capture",
+        json={
+            "input": "下周前把合同发出去",
+            "context": {"timezone": "Asia/Shanghai", "source": "chat", "source_ref": "msg-2", "actor": "tester"},
+            "dry_run": False,
+        },
+    )
+    assert persisted.status_code == 200
+    payload = persisted.json()
+    assert payload["task"]["id"]
+    assert payload["task"]["bucket"] == "inbox"
+    assert payload["task"]["status"] == "active"
+    assert payload["task"]["source"] == "chat"
+    assert payload["task"]["source_ref"] == "msg-2"
+    assert payload["parsed"]["title"] == "把合同发出去"
+
+    tasks = client.get("/api/tasks").json()
+    assert any(item["id"] == payload["task"]["id"] for item in tasks)
+
+
+def test_assistant_views_today_and_waiting() -> None:
+    today_task = client.post(
+        "/api/tasks",
+        json={"title": "Today task", "bucket": "next", "due_at": "2026-03-19T09:00:00Z", "last_modified_by": "tester"},
+    ).json()
+    overdue_task = client.post(
+        "/api/tasks",
+        json={"title": "Overdue task", "bucket": "next", "due_at": "2026-03-18T09:00:00Z", "last_modified_by": "tester"},
+    ).json()
+    future_task = client.post(
+        "/api/tasks",
+        json={"title": "Future task", "bucket": "next", "due_at": "2026-03-21T09:00:00Z", "last_modified_by": "tester"},
+    ).json()
+    waiting_task = client.post(
+        "/api/tasks",
+        json={"title": "Waiting task", "bucket": "waiting", "last_modified_by": "tester"},
+    ).json()
+
+    from unittest.mock import patch
+    from datetime import datetime
+    from app.services import assistant as assistant_service
+
+    fake_now = datetime(2026, 3, 19, 8, 0, 0)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fake_now
+            return fake_now.replace(tzinfo=tz)
+
+    with patch.object(assistant_service, "datetime", FrozenDateTime):
+        today = client.get("/api/assistant/views/today", params={"timezone": "UTC", "include_overdue": True})
+        assert today.status_code == 200
+        today_ids = {item["id"] for item in today.json()["items"]}
+        assert today_task["id"] in today_ids
+        assert overdue_task["id"] in today_ids
+        assert future_task["id"] not in today_ids
+
+        today_no_overdue = client.get("/api/assistant/views/today", params={"timezone": "UTC", "include_overdue": False})
+        ids_no_overdue = {item["id"] for item in today_no_overdue.json()["items"]}
+        assert today_task["id"] in ids_no_overdue
+        assert overdue_task["id"] not in ids_no_overdue
+
+    waiting = client.get("/api/assistant/views/waiting")
+    assert waiting.status_code == 200
+    waiting_ids = {item["id"] for item in waiting.json()["items"]}
+    assert waiting_task["id"] in waiting_ids
+    assert today_task["id"] not in waiting_ids
+    assert future_task["id"] not in waiting_ids

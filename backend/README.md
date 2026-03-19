@@ -7,14 +7,18 @@ FastAPI + SQLAlchemy + Alembic backend for the iOS GTD MVP. This version is aime
 - health / projects / tags / tasks API
 - task reopen API: `POST /api/tasks/{id}/reopen`
 - task batch update API: `POST /api/tasks/batch-update`
+- assistant-oriented higher-level API:
+  - `POST /api/assistant/capture`
+  - `GET /api/assistant/views/today`
+  - `GET /api/assistant/views/waiting`
 - soft-delete-first task deletion strategy
-- operation log recording for task create/update/complete/reopen/delete/batch-update
+- operation log recording for task create/update/complete/reopen/delete/batch-update/assistant_capture
 - placeholder sync endpoints:
   - `POST /api/sync/apple/pull`
   - `POST /api/sync/apple/push`
   - `POST /api/sync/apple/ack`
 - Alembic migration for initial schema
-- local test coverage for the main task lifecycle and sync placeholders
+- local test coverage for the main task lifecycle, assistant endpoints, and sync placeholders
 
 ## Quick start
 
@@ -101,6 +105,36 @@ This keeps sync/history safer for test deployments.
 - `POST /api/tasks/{id}/complete`
 - `POST /api/tasks/{id}/reopen`
 - `POST /api/tasks/batch-update`
+
+## Assistant higher-level routes
+
+These routes are meant for AI / chat orchestration so the model does not have to reconstruct common GTD behaviors from raw CRUD every time.
+
+- `POST /api/assistant/capture`
+  - turns natural language into a minimal task capture
+  - supports `dry_run=true` for parse-only behavior
+  - current parser is intentionally heuristic and conservative
+- `GET /api/assistant/views/today`
+  - returns active tasks due today
+  - optionally includes overdue tasks
+  - excludes `someday` and deleted tasks
+- `GET /api/assistant/views/waiting`
+  - returns active tasks in the `waiting` bucket
+
+Example capture request:
+
+```json
+{
+  "input": "明天提醒我发合同",
+  "context": {
+    "timezone": "Asia/Shanghai",
+    "source": "chat",
+    "source_ref": "msg_123",
+    "actor": "chat"
+  },
+  "dry_run": false
+}
+```
 
 ## Sync placeholder contract
 

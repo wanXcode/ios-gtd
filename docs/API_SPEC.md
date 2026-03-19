@@ -1065,7 +1065,7 @@ MVP 建议先采用保守策略：
 
 ## 8.1 POST /assistant/capture
 
-状态：`规划中`
+状态：`部分已实现`
 
 用途：把自然语言快速捕获为任务。
 
@@ -1102,10 +1102,20 @@ MVP 建议先采用保守策略：
 }
 ```
 
+### 当前已实现范围
+
+- 已提供最小可用路由：`POST /api/assistant/capture`
+- 支持 `dry_run=true`：只返回解析结果，不落库
+- 支持最小上下文：`timezone`、`source`、`source_ref`、`actor`
+- 当前解析策略为启发式规则，不依赖 LLM：
+  - 可识别少量中文时间表达（如 `今天`、`明天`、`下周`）
+  - 解析失败时保底策略：原文作为 `title`，进 `inbox`
+  - 当前会把原始输入保存在任务 `note` 中，便于后续二次整理
+
 ### 设计建议
 
-- `dry_run=true` 时只返回解析结果，不落库
-- 解析失败时保底策略：原文作为 `title`，进 `inbox`
+- 后续可把启发式 parser 升级为独立 NLP / LLM 解析层
+- 对时间表达建议补充更精细的语义（工作日、本周五、月底前等）
 
 ## 8.2 POST /assistant/plan
 
@@ -1213,7 +1223,7 @@ MVP 建议先采用保守策略：
 
 ## 8.5 GET /assistant/views/today
 
-状态：`规划中`
+状态：`部分已实现`
 
 用途：为对话层提供“今天做什么”的稳定视图。
 
@@ -1223,11 +1233,30 @@ MVP 建议先采用保守策略：
 - `include_overdue`
 - `limit`
 
+### 当前已实现范围
+
+- 已提供最小可用路由：`GET /api/assistant/views/today`
+- 当前筛选逻辑：
+  - `status = active`
+  - `deleted_at is null`
+  - `bucket != someday`
+  - `due_at != null`
+  - `include_overdue=true` 时返回“今日到期 + 已逾期”
+- 当前按 `due_at asc, priority desc, created_at asc` 排序
+
 ## 8.6 GET /assistant/views/waiting
 
-状态：`规划中`
+状态：`部分已实现`
 
 用途：返回等待中任务列表。
+
+### 当前已实现范围
+
+- 已提供最小可用路由：`GET /api/assistant/views/waiting`
+- 当前筛选逻辑：
+  - `bucket = waiting`
+  - `status = active`
+  - `deleted_at is null`
 
 ## 8.7 GET /assistant/views/project-summary
 
