@@ -26,8 +26,10 @@ class CaptureDraft:
     bucket: str
     status: str
     due_at: datetime | None
+    remind_at: datetime | None
     time_expression: str | None
     confidence: float
+    needs_confirmation: bool
     project_name: str | None = None
     project_description: str | None = None
 
@@ -102,6 +104,7 @@ class AssistantService:
             bucket=draft.bucket,
             status=draft.status,
             due_at=draft.due_at,
+            remind_at=draft.remind_at,
             source=source,
             source_ref=source_ref,
             last_modified_by=actor,
@@ -177,8 +180,10 @@ def serialize_capture_draft(draft: CaptureDraft) -> dict:
         "bucket": draft.bucket,
         "status": draft.status,
         "due_at": draft.due_at.isoformat() if draft.due_at else None,
+        "remind_at": draft.remind_at.isoformat() if draft.remind_at else None,
         "time_expression": draft.time_expression,
         "confidence": draft.confidence,
+        "needs_confirmation": draft.needs_confirmation,
         "project_name": draft.project_name,
         "project_description": draft.project_description,
     }
@@ -188,82 +193,95 @@ def parse_capture_input(text: str, *, timezone_name: str = "UTC") -> CaptureDraf
     raw = text.strip()
     if not raw:
         return CaptureDraft(
-            intent="capture_inbox",
-            title="Untitled inbox item",
-            summary="Untitled inbox item",
+            intent="create_task",
+            title="Untitled task",
+            summary="Untitled task",
             note=None,
             due_at=None,
+            remind_at=None,
             time_expression=None,
             confidence=0.2,
             bucket=TaskBucket.INBOX.value,
             status=TaskStatus.ACTIVE.value,
+            needs_confirmation=True,
         )
 
     tz = ZoneInfo(timezone_name)
     now = datetime.now(tz)
-    intent_hint = _detect_intent(raw)
-    due_at, time_expression, stripped_text = _extract_due_at(raw, tz=tz, now=now, parse_time=intent_hint == "create_task")
-    intent = _detect_intent(stripped_text)
-    normalized = _strip_command_prefix(stripped_text)
-    normalized = normalized.strip(" ，,。；;:\n\t") or raw
 
-    bucket = TaskBucket.INBOX.value
-    status = TaskStatus.ACTIVE.value
-    confidence = 0.58
-    note = raw
-    project_name: str | None = None
-    project_description: str | None = None
+    initial_intent = _detect_intent(raw)
+    temporal = _extract_temporal_info(raw, tz=tz, now=now)
+    stripped_text = _strip_command_prefix(temporal["summary"])
+    normalized = _cleanup_summary(stripped_text) or raw
+
+    intent = initial_intent
+    if intent == "capture_inbox" and (temporal["due_at"] is not None or temporal["time_expression"]):
+        intent = "create_task"
 
     if intent == "create_project":
         project_name = _extract_project_name(normalized)
-        summary = project_name
-        confidence = 0.83 if project_name != raw else 0.68
         return CaptureDraft(
             intent=intent,
             title=project_name,
-            summary=summary,
-            note=note,
+            summary=project_name,
+            note=raw,
             bucket=TaskBucket.PROJECT.value,
-            status=status,
+            status=TaskStatus.ACTIVE.value,
             due_at=None,
-            time_expression=time_expression,
-            confidence=confidence,
+            remind_at=None,
+            time_expression=temporal["time_expression"],
+            confidence=0.83 if project_name != raw else 0.68,
+            needs_confirmation=project_name == raw,
             project_name=project_name,
-            project_description=project_description,
+            project_description=None,
         )
 
-    if intent == "create_task":
-        bucket = TaskBucket.NEXT.value if due_at else TaskBucket.INBOX.value
-        confidence = 0.86 if due_at else 0.72
-    else:
-        bucket = TaskBucket.INBOX.value
-        confidence = 0.74 if normalized != raw else 0.61
+    bucket = _infer_bucket(raw, normalized)
+    if intent == "capture_inbox" and bucket != TaskBucket.INBOX.value:
+        intent = "create_task"
 
-    title = normalized
+    confidence = 0.58
+    if temporal["time_expression"]:
+        confidence += 0.14
+    if temporal["explicit_time"]:
+        confidence += 0.08
+    if bucket != TaskBucket.INBOX.value:
+        confidence += 0.05
+    if normalized != raw:
+        confidence += 0.05
+
+    needs_confirmation = False
+    if normalized == "Untitled task":
+        needs_confirmation = True
+    if temporal["time_expression"] == "下周" and not temporal["explicit_time"]:
+        needs_confirmation = True
+    if any(keyword in raw for keyword in ["找时间", "有空", "回头", "尽快"]) and temporal["due_at"] is None:
+        needs_confirmation = True
+
+    confidence = min(confidence, 0.96)
+    if needs_confirmation:
+        confidence = min(confidence, 0.78)
+
     return CaptureDraft(
-        intent=intent,
-        title=title,
-        summary=title,
-        note=note,
+        intent="create_task",
+        title=normalized,
+        summary=normalized,
+        note=raw,
         bucket=bucket,
-        status=status,
-        due_at=due_at,
-        time_expression=time_expression,
+        status=TaskStatus.ACTIVE.value,
+        due_at=temporal["due_at"],
+        remind_at=temporal["remind_at"],
+        time_expression=temporal["time_expression"],
         confidence=confidence,
-        project_name=project_name,
-        project_description=project_description,
+        needs_confirmation=needs_confirmation,
     )
 
 
 def _detect_intent(text: str) -> AssistantIntent:
-    lowered = text.lower()
+    lowered = text.lower().strip()
     if text.startswith(("建项目", "创建项目", "新建项目", "项目：", "项目:")) or lowered.startswith(("project:", "create project ")):
         return "create_project"
-    if (
-        text.startswith(("提醒我", "帮我记", "记得", "待办", "todo:", "todo：", "需要"))
-        or "提醒我" in text
-        or "帮我记" in text
-    ):
+    if text.startswith(("提醒我", "帮我记", "记得", "待办", "todo:", "todo：", "需要")):
         return "create_task"
     return "capture_inbox"
 
@@ -304,49 +322,108 @@ def _extract_project_name(text: str) -> str:
     return candidate or text.strip()
 
 
-def _extract_due_at(raw: str, *, tz: ZoneInfo, now: datetime, parse_time: bool) -> tuple[datetime | None, str | None, str]:
+def _infer_bucket(raw: str, normalized: str) -> str:
+    combined = f"{raw} {normalized}"
+    if any(keyword in combined for keyword in ["以后再说", "晚点再说", "回头再说", "有空再说"]):
+        return TaskBucket.SOMEDAY.value
+    if any(keyword in combined for keyword in ["项目", "project", "方案", "计划", "里程碑", "拆分", "需求"]):
+        return TaskBucket.NEXT.value
+    return TaskBucket.INBOX.value
+
+
+def _extract_temporal_info(raw: str, *, tz: ZoneInfo, now: datetime) -> dict:
     text = raw
+    explicit_time = False
+    due_at: datetime | None = None
+    remind_at: datetime | None = None
+    time_expression: str | None = None
 
-    for marker, day_offset in (("明天", 1), ("今天", 0)):
-        if marker in text and parse_time:
-            due_time = _extract_clock_time(text)
-            target_date = now.date() + timedelta(days=day_offset)
-            due_at = _combine_date_time(target_date, due_time[1] if due_time else None, tz)
-            text = text.replace(marker, "", 1)
-            if due_time and due_time[1][1] == 0:
-                text = re.sub(r"(上午|中午|下午|晚上|晚)?\s*\d{1,2}点(半)?", "", text, count=1)
-            return due_at, marker if not due_time else f"{marker}{due_time[0]}", text.strip()
+    time_match = re.search(r"(?<!\d)(\d{1,2})(?:[:点时](\d{1,2}))?(?:点|时)?\s*(半)?", text)
+    hour: int | None = None
+    minute: int | None = None
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2) or 0)
+        if time_match.group(3):
+            minute = 30
+        explicit_time = True
 
-    if parse_time and ("下周前" in text or text.startswith("下周") or " 提醒我下周" in f" {text}"):
-        target_date = now.date() + timedelta(days=7)
-        expression = "下周前" if "下周前" in text else "下周"
+    if "明晚" in text:
+        time_expression = "明晚"
+        target_date = now.date() + timedelta(days=1)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=20), tz)
+        remind_at = due_at - timedelta(hours=2)
+        text = text.replace("明晚", "", 1)
+    elif "今晚" in text:
+        time_expression = "今晚"
+        target_date = now.date()
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=20), tz)
+        remind_at = due_at - timedelta(hours=2)
+        text = text.replace("今晚", "", 1)
+    elif "明天" in text:
+        time_expression = "明天"
+        target_date = now.date() + timedelta(days=1)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18), tz)
+        if explicit_time:
+            remind_at = due_at - timedelta(hours=1)
+        text = text.replace("明天", "", 1)
+    elif "后天" in text:
+        time_expression = "后天"
+        target_date = now.date() + timedelta(days=2)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18), tz)
+        if explicit_time:
+            remind_at = due_at - timedelta(hours=1)
+        text = text.replace("后天", "", 1)
+    elif "今天" in text:
+        time_expression = "今天"
+        target_date = now.date()
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18), tz)
+        if explicit_time:
+            remind_at = due_at - timedelta(hours=1)
+        text = text.replace("今天", "", 1)
+    elif "下周" in text:
+        time_expression = "下周"
+        days_until_next_monday = 7 - now.weekday()
+        if days_until_next_monday <= 0:
+            days_until_next_monday += 7
+        target_date = now.date() + timedelta(days=days_until_next_monday)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18), tz)
+        if explicit_time:
+            remind_at = due_at - timedelta(days=1)
         text = text.replace("下周前", "", 1).replace("下周", "", 1)
-        return _end_of_day(target_date, tz), expression, text.strip()
 
-    return None, None, text.strip()
+    if time_match and time_expression:
+        refreshed_match = re.search(r"(?<!\d)(\d{1,2})(?:[:点时](\d{1,2}))?(?:点|时)?\s*(半)?", text)
+        if refreshed_match:
+            text = text[: refreshed_match.start()] + " " + text[refreshed_match.end() :]
 
-
-def _extract_clock_time(text: str) -> tuple[str, tuple[int, int]] | None:
-    match = re.search(r"(上午|中午|下午|晚上|晚)?\s*(\d{1,2})点(半)?", text)
-    if not match:
-        return None
-
-    period = match.group(1) or ""
-    hour = int(match.group(2))
-    minute = 30 if match.group(3) else 0
-
-    if period in {"下午", "晚上", "晚"} and hour < 12:
-        hour += 12
-    if period == "中午" and hour < 11:
-        hour += 12
-
-    return match.group(0), (hour, minute)
+    return {
+        "summary": text,
+        "due_at": due_at,
+        "remind_at": remind_at,
+        "time_expression": time_expression,
+        "explicit_time": explicit_time,
+    }
 
 
-def _combine_date_time(target_date: date, clock_time: tuple[int, int] | None, tz: ZoneInfo) -> datetime:
-    hour, minute = clock_time if clock_time else (18, 0)
+def _cleanup_summary(text: str) -> str:
+    value = text
+    for token in ["以后再说", "晚点再说", "回头再说", "有空再说", "前", "截止", "一下"]:
+        value = value.replace(token, " ")
+    value = re.sub(r"\s+", " ", value)
+    value = value.strip(" ，,。；;：:!?！？")
+    return value.strip() or "Untitled task"
+
+
+def _normalize_clock(hour: int | None, minute: int | None, *, fallback_hour: int) -> tuple[int, int]:
+    if hour is None:
+        return fallback_hour, 0
+    normalized_hour = hour
+    if fallback_hour >= 18 and 1 <= hour < 12:
+        normalized_hour = hour + 12
+    return max(0, min(normalized_hour, 23)), max(0, min(minute or 0, 59))
+
+
+def _combine_date_time(target_date: date, clock_time: tuple[int, int], tz: ZoneInfo) -> datetime:
+    hour, minute = clock_time
     return datetime.combine(target_date, time(hour=hour, minute=minute), tzinfo=tz).astimezone(timezone.utc)
-
-
-def _end_of_day(target_date: date, tz: ZoneInfo) -> datetime:
-    return _combine_date_time(target_date, (18, 0), tz)

@@ -490,7 +490,7 @@ def test_capture_api_apply_false_returns_structured_draft(test_context: tuple[Te
     response = client.post(
         "/api/assistant/capture",
         json={
-            "input": "明天晚上8点提醒我给妈妈打电话",
+            "input": "明晚8点给妈妈打电话",
             "context": {"timezone": "UTC", "actor": "tester"},
             "apply": False,
         },
@@ -502,15 +502,18 @@ def test_capture_api_apply_false_returns_structured_draft(test_context: tuple[Te
     assert payload["applied"] is False
     assert payload["draft"]["intent"] == "create_task"
     assert payload["draft"]["summary"] == "给妈妈打电话"
-    assert payload["draft"]["bucket"] == "next"
+    assert payload["draft"]["bucket"] == "inbox"
+    assert payload["draft"]["needs_confirmation"] is False
     assert payload["draft"]["due_at"].endswith("Z")
+    assert payload["draft"]["remind_at"].endswith("Z")
 
 
 def test_parse_capture_input_is_deterministic_for_relative_time() -> None:
-    parsed = parse_capture_input("提醒我下周整理项目方案", timezone_name="UTC")
+    parsed = parse_capture_input("以后再说 下周整理项目方案", timezone_name="UTC")
 
     assert parsed.intent == "create_task"
     assert parsed.summary == "整理项目方案"
-    assert parsed.bucket == "next"
+    assert parsed.bucket == "someday"
     assert parsed.due_at is not None
     assert parsed.time_expression == "下周"
+    assert parsed.needs_confirmation is True

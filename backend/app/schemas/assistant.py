@@ -32,8 +32,10 @@ class AssistantCaptureDraft(BaseModel):
     bucket: str
     status: str
     due_at: datetime | None = None
+    remind_at: datetime | None = None
     time_expression: str | None = None
     confidence: float
+    needs_confirmation: bool
     project_name: str | None = None
     project_description: str | None = None
 
