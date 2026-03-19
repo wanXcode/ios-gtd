@@ -16,14 +16,16 @@
   - `POST /api/tasks/batch-update`
   - 软删除优先
   - `operation_logs` 已接入关键任务变更流程
-- Apple sync 测试版链路：
+- Apple sync 联调链路：
   - `POST /api/sync/apple/pull`：接收 Bridge 提交的 Apple 增量变更并落库
   - `POST /api/sync/apple/push`：返回待回写到 Apple 的本地任务变更
   - `POST /api/sync/apple/ack`：Bridge 成功/失败回执，更新 mapping 与 pending 状态
+  - `GET /api/sync/apple/state/{bridge_id}`：读取后端持久化的 per-bridge checkpoint / cursor 状态
 - sync 语义补强：
   - `Task.sync_change_id` / `sync_pending` / `sync_last_pushed_at`
   - `Task.is_all_day_due`
   - `AppleReminderMapping.pending_operation` / `last_push_change_id` / `last_ack_status`
+  - `SyncBridgeState.backend_cursor / last_pull_cursor / last_push_cursor / last_acked_change_id`
 - 本地测试与 smoke test
 - Dockerfile + `docker-compose.dev.yml`
 
@@ -123,7 +125,7 @@ pytest
 
 当前已经适合“部署测试”，但还不是完整生产版：
 
-- Apple sync 已经不是纯占位：已能处理 pull / push / ack 的基本闭环，但仍未接入真实 EventKit 与长期冲突处理
+- Apple sync 已经不是纯占位：已能处理 pull / push / ack 的基本闭环，并持久化 per-bridge checkpoint；但仍未接入真实 EventKit 与长期冲突处理
 - 没有鉴权、多用户隔离、权限控制
 - 没有真正的后台任务/队列处理
 - 没有更细的观测、日志查询接口、运维脚本

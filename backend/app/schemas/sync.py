@@ -53,8 +53,29 @@ class SyncAppleAckItem(BaseModel):
     apple_calendar_id: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    retryable: bool = False
 
 
 class SyncAppleAckRequest(BaseModel):
     bridge_id: str = Field(min_length=1, max_length=255)
     acks: list[SyncAppleAckItem] = Field(default_factory=list)
+
+
+class SyncBridgeStateRead(BaseModel):
+    bridge_id: str
+    backend_cursor: str | None = None
+    last_pull_cursor: str | None = None
+    last_push_cursor: str | None = None
+    last_acked_change_id: int | None = None
+    last_seen_change_id: int | None = None
+    last_pull_started_at: datetime | None = None
+    last_pull_succeeded_at: datetime | None = None
+    last_push_started_at: datetime | None = None
+    last_push_succeeded_at: datetime | None = None
+    last_ack_started_at: datetime | None = None
+    last_ack_succeeded_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    metadata: dict | None = None
+    created_at: datetime
+    updated_at: datetime

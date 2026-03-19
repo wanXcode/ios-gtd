@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.apple_mapping import AppleReminderMapping
 from app.models.enums import SyncState, TaskBucket, TaskStatus
+from app.models.sync_bridge_state import SyncBridgeState
 from app.models.sync_run import SyncRun
 from app.models.task import Task
 from app.schemas.sync import (
@@ -14,6 +15,7 @@ from app.schemas.sync import (
     SyncApplePullChange,
     SyncApplePullRequest,
     SyncApplePushRequest,
+    SyncBridgeStateRead,
 )
 
 router = APIRouter()
@@ -57,6 +59,11 @@ def _serialize_push_item(task: Task, mapping: AppleReminderMapping | None) -> di
             "apple_list_id": mapping.apple_list_id if mapping else None,
             "apple_calendar_id": mapping.apple_calendar_id if mapping else None,
             "sync_state": mapping.sync_state if mapping else None,
+            "last_ack_status": mapping.last_ack_status if mapping else None,
+            "last_error_code": mapping.last_error_code if mapping else None,
+            "last_error_message": mapping.last_error_message if mapping else None,
+            "last_push_change_id": mapping.last_push_change_id if mapping else None,
+            "bridge_updated_at": mapping.bridge_updated_at.isoformat() if mapping and mapping.bridge_updated_at else None,
         },
         "task": {
             "title": task.title,
@@ -74,6 +81,38 @@ def _serialize_push_item(task: Task, mapping: AppleReminderMapping | None) -> di
             "source_ref": task.source_ref,
         },
     }
+
+
+def _get_or_create_bridge_state(db: Session, bridge_id: str) -> SyncBridgeState:
+    state = db.scalar(select(SyncBridgeState).where(SyncBridgeState.bridge_id == bridge_id))
+    if state:
+        return state
+    state = SyncBridgeState(bridge_id=bridge_id)
+    db.add(state)
+    db.flush()
+    return state
+
+
+def _serialize_bridge_state(state: SyncBridgeState) -> SyncBridgeStateRead:
+    return SyncBridgeStateRead(
+        bridge_id=state.bridge_id,
+        backend_cursor=state.backend_cursor,
+        last_pull_cursor=state.last_pull_cursor,
+        last_push_cursor=state.last_push_cursor,
+        last_acked_change_id=state.last_acked_change_id,
+        last_seen_change_id=state.last_seen_change_id,
+        last_pull_started_at=state.last_pull_started_at,
+        last_pull_succeeded_at=state.last_pull_succeeded_at,
+        last_push_started_at=state.last_push_started_at,
+        last_push_succeeded_at=state.last_push_succeeded_at,
+        last_ack_started_at=state.last_ack_started_at,
+        last_ack_succeeded_at=state.last_ack_succeeded_at,
+        last_error_code=state.last_error_code,
+        last_error_message=state.last_error_message,
+        metadata=state.metadata_json,
+        created_at=state.created_at,
+        updated_at=state.updated_at,
+    )
 
 
 def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str, str, Task | None]:
@@ -189,6 +228,14 @@ def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str,
     return "applied", "updated", task
 
 
+@router.get("/apple/state/{bridge_id}", response_model=SyncBridgeStateRead)
+def apple_state(bridge_id: str, db: Session = Depends(get_db)) -> SyncBridgeStateRead:
+    state = _get_or_create_bridge_state(db, bridge_id)
+    db.commit()
+    db.refresh(state)
+    return _serialize_bridge_state(state)
+
+
 @router.post("/apple/pull")
 def apple_pull(payload: SyncApplePullRequest, db: Session = Depends(get_db)) -> dict:
     run = SyncRun(
@@ -198,6 +245,9 @@ def apple_pull(payload: SyncApplePullRequest, db: Session = Depends(get_db)) -> 
         stats={"mode": "pull", "limit": payload.limit, "cursor": payload.cursor},
     )
     db.add(run)
+    state = _get_or_create_bridge_state(db, payload.bridge_id)
+    state.last_pull_started_at = _now()
+    state.last_pull_cursor = payload.cursor
 
     accepted = 0
     applied = 0
@@ -212,6 +262,8 @@ def apple_pull(payload: SyncApplePullRequest, db: Session = Depends(get_db)) -> 
             applied += 1
         elif result == "conflict":
             conflicts += 1
+            state.last_error_code = reason
+            state.last_error_message = f"conflict on {change.apple_reminder_id}"
         results.append(
             {
                 "apple_reminder_id": change.apple_reminder_id,
@@ -232,6 +284,12 @@ def apple_pull(payload: SyncApplePullRequest, db: Session = Depends(get_db)) -> 
         "cursor": payload.cursor,
         "next_cursor": next_cursor,
     }
+    state.backend_cursor = next_cursor
+    state.last_pull_succeeded_at = _now()
+    if conflicts == 0:
+        state.last_error_code = None
+        state.last_error_message = None
+    db.add(state)
     db.add(run)
     db.commit()
     return {
@@ -244,11 +302,17 @@ def apple_pull(payload: SyncApplePullRequest, db: Session = Depends(get_db)) -> 
         "applied": applied,
         "conflicts": conflicts,
         "results": results,
+        "checkpoint": _serialize_bridge_state(state).model_dump(mode="json"),
     }
 
 
 @router.post("/apple/push")
 def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> dict:
+    state = _get_or_create_bridge_state(db, payload.bridge_id)
+    state.last_push_started_at = _now()
+    if payload.cursor is not None:
+        state.last_push_cursor = payload.cursor
+
     stmt = (
         select(Task, AppleReminderMapping)
         .outerjoin(AppleReminderMapping, AppleReminderMapping.task_id == Task.id)
@@ -262,13 +326,19 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
     items = []
     next_cursor = payload.cursor
     returned = 0
+    max_seen_change_id = state.last_seen_change_id or 0
     for task, mapping in rows:
+        if payload.cursor is not None and str(task.sync_change_id) <= payload.cursor:
+            continue
         requested_version = requested_versions.get(task.id)
         if requested_version is not None and requested_version >= task.version:
+            continue
+        if mapping and mapping.last_ack_status in {"success", "acked"} and mapping.last_push_change_id == task.sync_change_id:
             continue
         items.append(_serialize_push_item(task, mapping))
         returned += 1
         next_cursor = str(task.sync_change_id)
+        max_seen_change_id = max(max_seen_change_id, task.sync_change_id)
         task.sync_last_pushed_at = _now()
         if mapping:
             mapping.pending_operation = _mapping_operation(mapping, task)
@@ -289,6 +359,12 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
             "next_cursor": next_cursor,
         },
     )
+    state.last_push_cursor = next_cursor
+    state.last_push_succeeded_at = _now()
+    state.last_seen_change_id = max_seen_change_id or state.last_seen_change_id
+    state.last_error_code = None
+    state.last_error_message = None
+    db.add(state)
     db.add(run)
     db.commit()
     return {
@@ -298,15 +374,20 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
         "cursor": payload.cursor,
         "next_cursor": next_cursor,
         "items": items,
+        "checkpoint": _serialize_bridge_state(state).model_dump(mode="json"),
     }
 
 
 @router.post("/apple/ack")
 def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> dict:
+    state = _get_or_create_bridge_state(db, payload.bridge_id)
+    state.last_ack_started_at = _now()
+
     acked = []
     success = 0
     failed = 0
     conflict = 0
+    max_acked_change_id = state.last_acked_change_id or 0
 
     for item in payload.acks:
         task = db.scalar(select(Task).where(Task.id == item.task_id))
@@ -327,6 +408,31 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
         elif not mapping:
             raise HTTPException(status_code=404, detail=f"Mapping not found for task: {item.task_id}")
 
+        if item.version > task.version:
+            raise HTTPException(status_code=409, detail=f"Ack version ahead of task version for task: {item.task_id}")
+        if mapping.last_synced_task_version and item.version < mapping.last_synced_task_version:
+            acked.append(
+                {
+                    "task_id": str(item.task_id),
+                    "remote_id": mapping.apple_reminder_id,
+                    "version": item.version,
+                    "change_id": task.sync_change_id,
+                    "status": "stale_ignored",
+                }
+            )
+            continue
+        if mapping.last_push_change_id and mapping.last_push_change_id > task.sync_change_id:
+            acked.append(
+                {
+                    "task_id": str(item.task_id),
+                    "remote_id": mapping.apple_reminder_id,
+                    "version": item.version,
+                    "change_id": task.sync_change_id,
+                    "status": "stale_ignored",
+                }
+            )
+            continue
+
         if item.remote_id:
             mapping.apple_reminder_id = item.remote_id
         mapping.apple_list_id = item.apple_list_id or mapping.apple_list_id
@@ -346,13 +452,18 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
             mapping.pending_operation = None
             mapping.sync_state = SyncState.DELETED.value if _task_operation(task) == "delete" else SyncState.ACTIVE.value
             mapping.is_deleted_on_apple = _task_operation(task) == "delete"
+            max_acked_change_id = max(max_acked_change_id, task.sync_change_id)
         elif item.status == "conflict":
             conflict += 1
             mapping.sync_state = SyncState.CONFLICT.value
+            state.last_error_code = item.error_code or "conflict"
+            state.last_error_message = item.error_message or f"conflict on task {item.task_id}"
         else:
             failed += 1
             task.sync_pending = True
             mapping.pending_operation = _task_operation(task)
+            state.last_error_code = item.error_code or ("retryable_push_failed" if item.retryable else "push_failed")
+            state.last_error_message = item.error_message or f"ack failed on task {item.task_id}"
 
         db.add(task)
         db.add(mapping)
@@ -373,6 +484,12 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
         finished_at=_now(),
         stats={"mode": "ack", "acked": len(acked), "success": success, "failed": failed, "conflict": conflict},
     )
+    state.last_ack_succeeded_at = _now()
+    state.last_acked_change_id = max_acked_change_id or state.last_acked_change_id
+    if failed == 0 and conflict == 0:
+        state.last_error_code = None
+        state.last_error_message = None
+    db.add(state)
     db.add(run)
     db.commit()
     return {
@@ -383,4 +500,5 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
         "success": success,
         "failed": failed,
         "conflict": conflict,
+        "checkpoint": _serialize_bridge_state(state).model_dump(mode="json"),
     }

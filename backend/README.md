@@ -13,11 +13,12 @@ FastAPI + SQLAlchemy + Alembic backend for the iOS GTD MVP. This version is aime
   - `GET /api/assistant/views/waiting`
 - soft-delete-first task deletion strategy
 - operation log recording for task create/update/complete/reopen/delete/batch-update/assistant_capture
-- Apple sync test-build endpoints:
+- Apple sync bridge endpoints:
   - `POST /api/sync/apple/pull`
   - `POST /api/sync/apple/push`
   - `POST /api/sync/apple/ack`
-- sync-oriented task / mapping fields:
+  - `GET /api/sync/apple/state/{bridge_id}`
+- sync-oriented task / mapping / bridge-state fields:
   - `tasks.is_all_day_due`
   - `tasks.sync_change_id`
   - `tasks.sync_pending`
@@ -25,8 +26,9 @@ FastAPI + SQLAlchemy + Alembic backend for the iOS GTD MVP. This version is aime
   - `apple_reminder_mappings.pending_operation`
   - `apple_reminder_mappings.last_push_change_id`
   - `apple_reminder_mappings.last_ack_status`
-- Alembic migrations for initial schema + sync bridge fields
-- local test coverage for the main task lifecycle and sync pull/push/ack flow
+  - `sync_bridge_states.backend_cursor / last_pull_cursor / last_push_cursor / last_acked_change_id`
+- Alembic migrations for initial schema + sync bridge fields + per-bridge checkpoint state
+- local test coverage for task lifecycle + sync pull/push/ack/idempotency checkpoint flow
 
 ## Quick start
 
@@ -144,26 +146,32 @@ Example capture request:
 }
 ```
 
-## Sync bridge contract (test build)
+## Sync bridge contract
 
-These endpoints are now closer to a real bridge contract and are usable for Mac Sync Bridge integration work.
+These endpoints are now meant for real bridge bring-up, not just a placeholder smoke path.
 
 - `POST /api/sync/apple/pull`
   - accepts remote `changes[]` from Apple side
   - supports `upsert` and `delete`
   - creates/updates local tasks and Apple mappings
   - marks sync conflicts conservatively instead of overwriting blindly
+  - persists per-bridge checkpoint state and returns a `checkpoint` snapshot in response
 - `POST /api/sync/apple/push`
   - returns local tasks that still have `sync_pending=true`
   - includes `change_id`, `operation`, mapping info, and task snapshot
-  - records `sync_last_pushed_at`
+  - supports bridge-side `cursor` filtering to avoid replaying already-seen changes in the same bridge
+  - skips already-acked `last_push_change_id` payloads to reduce duplicate write-back risk
 - `POST /api/sync/apple/ack`
   - updates mapping after bridge write-back
   - clears pending state on success
   - preserves pending state on failure
   - marks mapping as conflict on conflict ack
+  - ignores stale ack versions that are older than the mapping's last synced version
+  - rejects impossible future ack versions with HTTP 409
+- `GET /api/sync/apple/state/{bridge_id}`
+  - returns the backend's persisted per-bridge checkpoint / cursor snapshot
 
-All three endpoints also create `sync_runs` rows so test deployments can inspect sync activity.
+All sync endpoints also create `sync_runs` rows so test deployments can inspect sync activity.
 
 ## Testing
 
@@ -177,7 +185,9 @@ Covered right now:
 - create / complete / reopen / soft delete lifecycle
 - batch update
 - operation log writes
-- sync placeholder smoke path
+- sync pull / push / ack flow
+- per-bridge checkpoint persistence
+- stale ack ignore + push cursor dedupe behavior
 
 ## Docker
 
@@ -197,8 +207,8 @@ docker compose -f docker-compose.dev.yml up --build
 
 ## Current known gaps
 
-- sync endpoints are still placeholder contract endpoints, not real EventKit sync logic
-- no auth / multi-user separation yet
+- backend now persists per-bridge checkpoint state, but bridge identity still has no auth binding / device credential model
+- no dedicated retry queue table on backend side yet; retry scheduling is still mostly bridge-owned
 - no pagination yet on task listing
 - no dedicated operation log query API yet
 - no production infra manifests yet

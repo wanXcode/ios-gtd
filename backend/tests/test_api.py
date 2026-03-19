@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.main import app as fastapi_app
 from app.models.apple_mapping import AppleReminderMapping
 from app.models.operation_log import OperationLog
+from app.models.sync_bridge_state import SyncBridgeState
 from app.models.task import Task
 
 
@@ -160,6 +161,7 @@ def test_sync_pull_push_ack_flow() -> None:
     pull_payload = remote_pull.json()
     assert pull_payload["accepted"] == 1
     assert pull_payload["applied"] == 1
+    assert pull_payload["checkpoint"]["backend_cursor"] == "2026-03-19T04:00:00+00:00"
     task_id = pull_payload["results"][0]["task_id"]
 
     fetched = client.get(f"/api/tasks/{task_id}", params={"include_deleted": True}).json()
@@ -183,6 +185,7 @@ def test_sync_pull_push_ack_flow() -> None:
     assert item["operation"] == "upsert"
     assert item["task"]["title"] == "Locally changed"
     assert item["change_id"] >= 2
+    assert int(push_payload["checkpoint"]["last_push_cursor"]) >= item["change_id"]
 
     ack = client.post(
         "/api/sync/apple/ack",
@@ -204,14 +207,19 @@ def test_sync_pull_push_ack_flow() -> None:
     assert ack.status_code == 200
     ack_payload = ack.json()
     assert ack_payload["success"] == 1
+    assert ack_payload["checkpoint"]["last_acked_change_id"] == item["change_id"]
 
     with TestingSessionLocal() as db:
         task = db.scalar(select(Task).where(Task.id == UUID(task_id)))
         mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == UUID(task_id)))
+        state = db.scalar(select(SyncBridgeState).where(SyncBridgeState.bridge_id == "bridge-dev"))
         assert task.sync_pending is False
         assert mapping.last_synced_task_version == task.version
         assert mapping.apple_reminder_id == "apple-remote-1"
         assert mapping.pending_operation is None
+        assert state.backend_cursor == "2026-03-19T04:00:00+00:00"
+        assert int(state.last_push_cursor) >= item["change_id"]
+        assert state.last_acked_change_id >= item["change_id"]
 
 
 def test_sync_pull_delete_marks_task_deleted() -> None:
@@ -257,3 +265,80 @@ def test_sync_pull_delete_marks_task_deleted() -> None:
     task = client.get(f"/api/tasks/{task_id}", params={"include_deleted": True}).json()
     assert task["status"] == "deleted"
     assert task["deleted_at"] is not None
+
+
+def test_sync_ack_stale_version_is_ignored_and_push_cursor_filters_duplicates() -> None:
+    created = client.post("/api/tasks", json={"title": "Dedup me", "last_modified_by": "tester"}).json()
+    task_id = created["id"]
+
+    first_push = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-dedup", "cursor": "0", "limit": 10, "tasks": []},
+    )
+    assert first_push.status_code == 200
+    first_item = next(entry for entry in first_push.json()["items"] if entry["task_id"] == task_id)
+
+    first_ack = client.post(
+        "/api/sync/apple/ack",
+        json={
+            "bridge_id": "bridge-dedup",
+            "acks": [
+                {
+                    "task_id": task_id,
+                    "remote_id": "apple-dedup-1",
+                    "version": first_item["version"],
+                    "status": "success",
+                    "apple_modified_at": "2026-03-19T07:00:00Z",
+                }
+            ],
+        },
+    )
+    assert first_ack.status_code == 200
+
+    stale_ack = client.post(
+        "/api/sync/apple/ack",
+        json={
+            "bridge_id": "bridge-dedup",
+            "acks": [
+                {
+                    "task_id": task_id,
+                    "remote_id": "apple-dedup-1",
+                    "version": first_item["version"] - 1,
+                    "status": "success",
+                    "apple_modified_at": "2026-03-19T07:01:00Z",
+                }
+            ],
+        },
+    )
+    assert stale_ack.status_code == 200
+    assert stale_ack.json()["acked"][0]["status"] == "stale_ignored"
+
+    updated = client.patch(
+        f"/api/tasks/{task_id}",
+        json={"title": "Dedup me again", "last_modified_by": "tester"},
+    )
+    assert updated.status_code == 200
+    next_change_id = updated.json()["sync_change_id"]
+
+    second_push = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-dedup", "cursor": str(next_change_id - 1), "limit": 10, "tasks": []},
+    )
+    assert second_push.status_code == 200
+    assert any(entry["task_id"] == task_id for entry in second_push.json()["items"])
+
+    filtered_push = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-dedup", "cursor": str(next_change_id), "limit": 10, "tasks": []},
+    )
+    assert filtered_push.status_code == 200
+    assert all(entry["task_id"] != task_id for entry in filtered_push.json()["items"])
+
+
+def test_sync_bridge_state_endpoint_returns_checkpoint_snapshot() -> None:
+    response = client.get("/api/sync/apple/state/bridge-state-check")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["bridge_id"] == "bridge-state-check"
+    assert payload["backend_cursor"] is None
+    assert payload["last_acked_change_id"] is None

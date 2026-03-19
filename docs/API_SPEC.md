@@ -844,9 +844,9 @@ HTTP 状态码：`409 Conflict`
 
 ## 7.3 POST /sync/apple/pull
 
-状态：`已实现（测试版）`
+状态：`已实现`
 
-用途：由 Sync Bridge 把 Apple Reminders 侧增量变更提交给后端。
+用途：由 Sync Bridge 把 Apple Reminders 侧增量变更提交给后端，并推进该 bridge 在后端侧的持久 checkpoint。
 
 这是“手机/Reminders 改了什么，后端吃进去”的入口。
 
@@ -886,18 +886,25 @@ HTTP 状态码：`409 Conflict`
 - `upsert`：新增或更新 Reminder
 - `delete`：Apple 侧已删除
 
-### 当前测试版语义
+### 当前语义
 
 - `pull` 直接接收 `changes[]`，支持 `upsert` / `delete`
 - 若 `apple_reminder_id` 已有 mapping，则尝试更新既有任务
 - 若无 mapping 且为 `upsert`，后端会新建 task + mapping
 - 若本地任务仍处于 `sync_pending=true`，且远端修改时间晚于上次看到的 Apple 时间，同时本地任务也在 mapping 更新时间后发生过本地修改，则标记为 `conflict`
 - `delete` 会把本地 task 软删除，而不是物理删除
+- 后端会按 `bridge_id` 持久化 `backend_cursor / last_pull_cursor / last_pull_succeeded_at`
+- 响应内会返回当前 backend 视角的 `checkpoint` 快照，便于 bridge 对账
 
 ### 响应示例
 
 ```json
 {
+  "ok": true,
+  "mode": "pull",
+  "bridge_id": "mac-mini-home",
+  "cursor": "c1",
+  "next_cursor": "2026-03-19T07:59:00+00:00",
   "accepted": 2,
   "applied": 1,
   "conflicts": 1,
@@ -912,7 +919,15 @@ HTTP 状态码：`409 Conflict`
       "result": "conflict",
       "reason": "task_modified_after_last_sync"
     }
-  ]
+  ],
+  "checkpoint": {
+    "bridge_id": "mac-mini-home",
+    "backend_cursor": "2026-03-19T07:59:00+00:00",
+    "last_pull_cursor": "c1",
+    "last_push_cursor": null,
+    "last_acked_change_id": null,
+    "last_seen_change_id": null
+  }
 }
 ```
 
@@ -924,31 +939,44 @@ MVP 建议先采用保守策略：
 - 冲突时不自动覆盖，记录 `sync_state = conflict`
 - AI 或管理接口可后续查看并处理
 
-## 7.4 GET /sync/apple/push
+## 7.4 POST /sync/apple/push
 
-状态：`已实现（测试版）`
+状态：`已实现`
 
 用途：由 Sync Bridge 拉取“服务端待回写到 Apple Reminders”的任务变更。
 
 这是“对话或 API 改了任务，桥接程序要怎么回写 Apple”的出口。
 
-### 查询参数
+### 请求体
 
 - `bridge_id`：必填
+- `cursor`：可选，bridge 已确认看过的最大 `change_id` 游标；后端会尽量不重复返回 `<= cursor` 的本地变更
+- `tasks[]`：可选，bridge 已知 task 版本摘要；若后端版本不高于该值，则可跳过返回
 - `limit`：默认 100
 
 ### 响应示例
 
 ```json
 {
+  "ok": true,
+  "mode": "push",
+  "bridge_id": "mac-mini-home",
+  "cursor": "11",
+  "next_cursor": "14",
   "items": [
     {
       "task_id": "1dbe18f0-91df-454f-b53e-5426f5ee54db",
       "version": 4,
+      "change_id": 14,
       "operation": "upsert",
       "mapping": {
         "apple_reminder_id": "x-apple-reminder://A1B2C3",
-        "apple_list_id": "apple-list-001"
+        "apple_list_id": "apple-list-001",
+        "apple_calendar_id": "apple-calendar-001",
+        "sync_state": "active",
+        "last_ack_status": "failed",
+        "last_error_code": "eventkit_timeout",
+        "last_error_message": "Save reminder timeout"
       },
       "task": {
         "title": "给客户回电话",
@@ -960,27 +988,29 @@ MVP 建议先采用保守策略：
         "remind_at": null,
         "completed_at": null
       }
-    },
-    {
-      "task_id": "278a6ca4-b2f8-4470-9cd7-9d98a248f78e",
-      "version": 2,
-      "operation": "delete",
-      "mapping": {
-        "apple_reminder_id": "x-apple-reminder://D9E8F7",
-        "apple_list_id": "apple-list-001"
-      }
     }
-  ]
+  ],
+  "checkpoint": {
+    "bridge_id": "mac-mini-home",
+    "backend_cursor": "2026-03-19T07:59:00+00:00",
+    "last_pull_cursor": "c1",
+    "last_push_cursor": "14",
+    "last_acked_change_id": 11,
+    "last_seen_change_id": 14
+  }
 }
 ```
 
-### 当前测试版语义
+### 当前语义
 
-- `push` 当前为 POST，便于后续带上 Bridge 已知版本、游标和能力信息
+- `push` 为 POST，便于带上 bridge 已知版本与 cursor
 - 默认会返回 `sync_pending=true` 的任务，或 mapping 上仍有 `pending_operation` 的任务
+- 若请求带了 `cursor`，后端会尽量跳过 `change_id <= cursor` 的本地变更，降低 replay 风险
+- 若 mapping 已记录 `last_ack_status in {success, acked}` 且 `last_push_change_id == task.sync_change_id`，后端会跳过该条，减少重复 write-back
 - 返回字段中已包含 `change_id`、mapping、task 快照和 `operation`
 - `operation` 当前可能是 `upsert` / `complete` / `delete`
 - `push` 会记录 `sync_last_pushed_at`，但不会因为“仅下发未 ack”就清掉 pending
+- 响应内会返回当前 bridge 对应的 `checkpoint` 快照
 
 ### operation
 
@@ -990,7 +1020,7 @@ MVP 建议先采用保守策略：
 
 ## 7.5 POST /sync/apple/ack
 
-状态：`已实现（测试版）`
+状态：`已实现`
 
 用途：Sync Bridge 在成功写回 Apple Reminders 后确认 ack，更新 mapping 与出队状态。
 
@@ -998,14 +1028,13 @@ MVP 建议先采用保守策略：
 
 ```json
 {
-  "run_id": "49ca9b2d-9ca6-4b32-a8c7-dc86c457968d",
   "bridge_id": "mac-mini-home",
-  "results": [
+  "acks": [
     {
       "task_id": "1dbe18f0-91df-454f-b53e-5426f5ee54db",
       "version": 4,
       "status": "success",
-      "apple_reminder_id": "x-apple-reminder://A1B2C3",
+      "remote_id": "x-apple-reminder://A1B2C3",
       "apple_modified_at": "2026-03-19T08:01:00Z"
     },
     {
@@ -1013,30 +1042,88 @@ MVP 建议先采用保守策略：
       "version": 2,
       "status": "failed",
       "error_code": "apple_permission_denied",
-      "error_message": "EventKit write permission denied"
+      "error_message": "EventKit write permission denied",
+      "retryable": true
     }
   ]
 }
 ```
 
-### 当前测试版语义
+### 当前语义
 
 - `ack` 支持 `success` / `acked` / `failed` / `conflict`
 - `success|acked`：更新 mapping、清除 `sync_pending`、更新 `last_synced_task_version` 与 `last_push_change_id`
-- `failed`：保留 `sync_pending=true`，等待后续重试
+- `failed`：保留 `sync_pending=true`，等待后续重试；`retryable=true` 仅作为错误语义补充，当前不单独建后端 retry queue
 - `conflict`：mapping 会进入 `sync_state=conflict`
+- 若 ack 的 `version` 小于 mapping 已知的 `last_synced_task_version`，后端会返回 `stale_ignored`，避免旧回执覆盖新状态
+- 若 ack 的 `version` 大于当前 `task.version`，后端会返回 HTTP 409，阻止不可能的未来版本写入
+- ack 成功时会推进 `sync_bridge_states.last_acked_change_id`
 
 ### 响应示例
 
 ```json
 {
-  "acked": 2,
+  "ok": true,
+  "mode": "ack",
+  "bridge_id": "mac-mini-home",
+  "acked": [
+    {
+      "task_id": "1dbe18f0-91df-454f-b53e-5426f5ee54db",
+      "remote_id": "x-apple-reminder://A1B2C3",
+      "version": 4,
+      "change_id": 14,
+      "status": "success"
+    },
+    {
+      "task_id": "278a6ca4-b2f8-4470-9cd7-9d98a248f78e",
+      "remote_id": "x-apple-reminder://D9E8F7",
+      "version": 1,
+      "change_id": 13,
+      "status": "stale_ignored"
+    }
+  ],
   "success": 1,
-  "failed": 1
+  "failed": 1,
+  "conflict": 0,
+  "checkpoint": {
+    "bridge_id": "mac-mini-home",
+    "backend_cursor": "2026-03-19T07:59:00+00:00",
+    "last_pull_cursor": "c1",
+    "last_push_cursor": "14",
+    "last_acked_change_id": 14,
+    "last_seen_change_id": 14
+  }
 }
 ```
 
-## 7.6 POST /sync/runs/{id}/finish
+## 7.6 GET /sync/apple/state/{bridge_id}
+
+状态：`已实现`
+
+用途：读取 backend 为指定 bridge 持久化的 checkpoint / cursor / 最近错误状态，便于 bridge 冷启动恢复和联调排障。
+
+### 响应示例
+
+```json
+{
+  "bridge_id": "mac-mini-home",
+  "backend_cursor": "2026-03-19T07:59:00+00:00",
+  "last_pull_cursor": "c1",
+  "last_push_cursor": "14",
+  "last_acked_change_id": 14,
+  "last_seen_change_id": 14,
+  "last_pull_started_at": "2026-03-19T08:00:00+00:00",
+  "last_pull_succeeded_at": "2026-03-19T08:00:02+00:00",
+  "last_push_started_at": "2026-03-19T08:00:03+00:00",
+  "last_push_succeeded_at": "2026-03-19T08:00:04+00:00",
+  "last_ack_started_at": "2026-03-19T08:00:05+00:00",
+  "last_ack_succeeded_at": "2026-03-19T08:00:05+00:00",
+  "last_error_code": null,
+  "last_error_message": null
+}
+```
+
+## 7.7 POST /sync/runs/{id}/finish
 
 状态：`规划中`
 
@@ -1058,7 +1145,7 @@ MVP 建议先采用保守策略：
 }
 ```
 
-## 7.7 GET /sync/runs
+## 7.8 GET /sync/runs
 
 状态：`规划中`
 
@@ -1072,7 +1159,7 @@ MVP 建议先采用保守策略：
 - `limit`
 - `offset`
 
-## 7.8 GET /sync/conflicts
+## 7.9 GET /sync/conflicts
 
 状态：`规划中`
 
