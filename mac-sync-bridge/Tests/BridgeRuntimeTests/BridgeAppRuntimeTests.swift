@@ -5,11 +5,10 @@ import EventKitAdapter
 import Foundation
 import HTTPClient
 import Persistence
-import Testing
+import XCTest
 
-struct BridgeAppRuntimeTests {
-    @Test
-    func bridgeAppLoopRunsConfiguredIterationsAndSleepsBetweenRuns() async throws {
+final class BridgeAppRuntimeTests: XCTestCase {
+    func testBridgeAppLoopRunsConfiguredIterationsAndSleepsBetweenRuns() async throws {
         let now = Date(timeIntervalSince1970: 1_710_000_000)
         let clock = IncrementingDateProvider(start: now)
         let coordinator = SyncCoordinator(
@@ -51,14 +50,13 @@ struct BridgeAppRuntimeTests {
         let sleepIntervals = await ticker.intervals
         let messages = await logger.messages
 
-        #expect(summary.iterationResults.count == 2)
-        #expect(sleepIntervals == [42])
-        #expect(messages.contains { $0.contains("iteration=1 sync started") })
-        #expect(messages.contains { $0.contains("iteration=2 sync finished") })
+        XCTAssertEqual(summary.iterationResults.count, 2)
+        XCTAssertEqual(sleepIntervals, [42])
+        XCTAssertTrue(messages.contains { $0.contains("iteration=1 sync started") })
+        XCTAssertTrue(messages.contains { $0.contains("iteration=2 sync finished") })
     }
 
-    @Test
-    func bridgeAppLoopContinuesAfterSyncFailure() async throws {
+    func testBridgeAppLoopContinuesAfterSyncFailure() async throws {
         let now = Date(timeIntervalSince1970: 1_720_000_000)
         let clock = IncrementingDateProvider(start: now)
         let runtime = BridgeRuntime(
@@ -87,13 +85,13 @@ struct BridgeAppRuntimeTests {
         let sleepIntervals = await ticker.intervals
         let messages = await logger.messages
 
-        #expect(summary.iterationResults.count == 2)
-        #expect(sleepIntervals == [15])
-        #expect(summary.iterationResults.allSatisfy {
+        XCTAssertEqual(summary.iterationResults.count, 2)
+        XCTAssertEqual(sleepIntervals, [15])
+        XCTAssertTrue(summary.iterationResults.allSatisfy {
             if case .failed = $0.outcome { return true }
             return false
         })
-        #expect(messages.contains { $0.contains("sync failed") })
+        XCTAssertTrue(messages.contains { $0.contains("sync failed") })
     }
 }
 
