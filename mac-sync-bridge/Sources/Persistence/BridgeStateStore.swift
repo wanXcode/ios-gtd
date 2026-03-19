@@ -646,8 +646,8 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
                 statement.bind(optionalText: operation.lastErrorMessage, at: 6)
                 statement.bind(int64: Int64(operation.attemptCount), at: 7)
                 statement.bind(optionalText: Self.iso8601String(from: operation.nextRetryAt), at: 8)
-                statement.bind(text: Self.iso8601String(from: operation.createdAt), at: 9)
-                statement.bind(text: Self.iso8601String(from: operation.updatedAt), at: 10)
+                statement.bind(text: Self.iso8601String(from: operation.createdAt) ?? "", at: 9)
+                statement.bind(text: Self.iso8601String(from: operation.updatedAt) ?? "", at: 10)
                 try statement.runToCompletion()
             }
 
@@ -865,9 +865,9 @@ private final class SQLiteStatement {
         sqlite3_bind_text(statement, index, text, -1, SQLITE_TRANSIENT)
     }
 
-    func bind(optionalText: String?, at index: Int32) {
-        if let text = text {
-            bind(text: text, at: index)
+    func bind(optionalText value: String?, at index: Int32) {
+        if let value {
+            bind(text: value, at: index)
         } else {
             sqlite3_bind_null(statement, index)
         }
@@ -889,14 +889,14 @@ private final class SQLiteStatement {
         }
     }
 
-    func bind(blob: Data?, at index: Int32) {
-        guard let data else {
+    func bind(blob value: Data?, at index: Int32) {
+        guard let value else {
             sqlite3_bind_null(statement, index)
             return
         }
-        data.withUnsafeBytes { rawBuffer in
+        value.withUnsafeBytes { rawBuffer in
             if let baseAddress = rawBuffer.baseAddress {
-                sqlite3_bind_blob(statement, index, baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+                sqlite3_bind_blob(statement, index, baseAddress, Int32(value.count), SQLITE_TRANSIENT)
             } else {
                 sqlite3_bind_null(statement, index)
             }
