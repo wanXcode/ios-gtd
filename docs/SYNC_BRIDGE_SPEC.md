@@ -1274,6 +1274,9 @@ MVP 可在 README 中提前声明：
 - `HTTPClient/BackendSyncClient.swift`
   - 已定义 `BackendSyncClient` 协议与 `InMemoryBackendSyncClient`
   - 已补 `URLSessionBackendSyncClient`、`BackendEndpointSet`、`BackendClientError`
+- `Tests/HTTPClientTests/URLSessionBackendSyncClientContractTests.swift`
+  - 已新增 pull / push / ack 的 JSON fixture contract tests
+  - 已覆盖 request body / auth header / checkpoint decode / error body 透传
 - `Persistence/BridgeStateStore.swift`
   - 已定义 `BridgeStateStore` 协议、`BridgeConfiguration`
   - 已补 `SQLiteSchemaDefinition`、`SQLiteBridgeStateStore` 与 pending operation 更新/删除接口
@@ -1291,7 +1294,7 @@ MVP 可在 README 中提前声明：
 也就是说，下一阶段重点已经可以从“先搭骨架”切到：
 - 在 macOS 上把 `ReminderStore` 真正接到 EventKit
 - 把 `SQLiteBridgeStateStore` 在真机上编译并补强 locked/migration 细节
-- 用真实后端 payload 校准 `URLSessionBackendSyncClient`
+- 继续用真实后端 payload 扩充 `URLSessionBackendSyncClient` fixture 覆盖（尤其 partial failure / reject body）
 - 把 pending operation executor 从“已成型边界”继续推进成真正 delivery runner
 
 ## 16.2 第二批补齐

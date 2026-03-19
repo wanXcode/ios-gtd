@@ -59,6 +59,10 @@ let package = Package(
         .testTarget(
             name: "BridgeRuntimeTests",
             dependencies: ["BridgeRuntime"]
+        ),
+        .testTarget(
+            name: "HTTPClientTests",
+            dependencies: ["HTTPClient"]
         )
     ]
 )

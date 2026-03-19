@@ -17,12 +17,26 @@ Mac Sync Bridge 是 GTD 系统的本地同步代理，负责在：
 - CLI 可跑 `doctor` / `sync-once` / `print-config`，且不再依赖 in-memory demo wiring
 - `BridgeApp` 已从纯占位推进到可常驻 loop 的 runtime host，支持按配置周期持续触发 sync
 - `BridgeCoreTests` + `BridgeRuntimeTests` 已覆盖主链路、配置加载优先级与 BridgeApp loop 行为
+- `HTTPClientTests` 已开始用 JSON fixtures 锁定 pull / push / ack 契约与错误透传行为
 
 它还不是可直接联调完成版，但相比纯 in-memory scaffold，已经更接近“真实可接 API / SQLite / EventKit”的状态。
 
 ## 这轮新增推进
 
-### 1. Backend contract 对齐进一步前进
+### 1. Backend contract tests 落地，HTTP 对接首次被 fixture 锁住
+
+这轮新增 `Tests/HTTPClientTests/URLSessionBackendSyncClientContractTests.swift`，不再只靠“结构上看起来像能对接”，而是开始用后端风格 JSON fixture 直接验证：
+
+- pull / push / ack 三条 `/api/sync/apple/*` 路径是否发到对地方
+- request body 是否带上 `bridge_id / cursor / limit / acks[]`
+- `Authorization: Bearer <token>` / JSON content-type 是否正确注入
+- pull / push 的 `checkpoint` / `change_id` / `version` 是否被正确解码进 bridge 内部模型
+- 非 2xx 错误时，response body 是否原样进入 `BackendClientError.unexpectedStatusCode`
+- contract 缺字段时，是否明确抛 `decodingFailed`，避免静默吞掉接口漂移
+
+这一步的价值在于：bridge 现在第一次有了“HTTP 契约锁”。后续后端字段漂移、key 改名、漏回 checkpoint，不会只在真机联调时才暴露，而会先在 client contract test 这一层炸出来。
+
+### 2. Backend contract 对齐进一步前进
 
 `BridgeModels` / `HTTPClient` 现在不再只围绕一个理想化的 `changes` 数组转：
 
@@ -269,7 +283,7 @@ swift run BridgeApp --backend-base-url http://127.0.0.1:8000 --api-token "$BRIDG
 
 如果下一轮继续推进，优先级建议：
 1. 在 macOS 上跑通 `swift build && swift test`
-2. 给 `URLSessionBackendSyncClient` 加 contract tests（mock JSON fixtures）
+2. 在 macOS 上实际跑通新的 `HTTPClientTests`
 3. 把 pending executor 分裂成 remote push replay / local write replay 两类
 4. 让 `BridgeApp` / LaunchAgent 真正消费 `BridgeRuntimeConfiguration` 并进入常驻循环
 5. 做第一次真机 EventKit 联调记录
