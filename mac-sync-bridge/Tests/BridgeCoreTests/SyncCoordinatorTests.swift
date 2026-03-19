@@ -309,14 +309,17 @@ private actor AcceptingPendingBackendSyncClient: BackendSyncClient {
 
     func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
         let accepted = request.tasks.map {
-            PushTaskResult(
-                reminderID: "r-pending",
+            let taskID = $0.taskID ?? "generated-task-id"
+            let versionToken = $0.backendVersionToken ?? "v1"
+            return PushTaskResult(
+                reminderID: $0.reminderID,
                 task: BackendTaskRecord(
-                    id: $0.taskID,
-                    title: "Pending",
-                    state: .active,
+                    id: taskID,
+                    title: $0.title,
+                    state: $0.state,
                     updatedAt: Date(),
-                    versionToken: "v\($0.version)"
+                    versionToken: versionToken,
+                    sourceRecordID: $0.reminderID
                 )
             )
         }
