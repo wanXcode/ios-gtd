@@ -132,6 +132,8 @@ These routes are meant for AI / chat orchestration so the model does not have to
 - `GET /api/assistant/views/waiting`
   - returns active tasks in the `waiting` bucket
 
+Important contract note: `POST /api/assistant/capture` expects `input`, not `text`.
+
 Example capture request:
 
 ```json
@@ -182,6 +184,11 @@ All sync endpoints also create `sync_runs` rows so test deployments can inspect 
 ```bash
 pytest
 ```
+
+Current local regression baseline:
+
+- `12 passed` on project test suite
+- tests now run with per-test isolated DB/client fixtures, so full-suite results are stable and suitable as pre-E2E guardrail
 
 Covered right now:
 

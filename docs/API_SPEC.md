@@ -1500,7 +1500,9 @@ MVP 当前允许物理删除，但建议尽快切换成软删除：
 
 ## 11. 与当前代码的差异说明
 
-当前仓库实际已实现的仅包括：
+这部分需要以当前仓库代码为准，不能再沿用早期占位版认知。
+
+当前仓库实际已实现的包括：
 
 - `GET /health`
 - `GET/POST /projects`
@@ -1508,13 +1510,26 @@ MVP 当前允许物理删除，但建议尽快切换成软删除：
 - `GET/POST /tasks`
 - `GET/PATCH/DELETE /tasks/{id}`
 - `POST /tasks/{id}/complete`
+- `POST /tasks/{id}/reopen`
+- `POST /tasks/batch-update`
+- `POST /assistant/capture`
+- `GET /assistant/views/today`
+- `GET /assistant/views/waiting`
+- `POST /sync/apple/pull`
+- `POST /sync/apple/push`
+- `POST /sync/apple/ack`
+- `GET /sync/apple/state/{bridge_id}`
 
-以下内容在本文中属于“设计先行，代码未落地”：
+以下内容在本文中仍属于“设计先行，代码未完全落地”或“能力仍待加强”：
 
 - Project/Tag 的 patch/delete/detail
-- Task 的 reopen、batch-update、视图接口
-- 全部 sync 接口
-- 全部 assistant 接口
 - 统一认证、分页、错误包装、乐观锁
+- sync bridge 的注册、run start/finish、冲突列表等外围诊断接口
+- assistant 的 plan / execute / inbox-organize / project-summary
 
-开发时应以“文档指导实现，但不误导当前已上线能力”为原则。
+另外，首轮 E2E smoke 时请特别注意两个现有合同点：
+
+- `POST /assistant/capture` 的请求字段名是 `input`，不是 `text`
+- `POST /sync/apple/ack` 若显式传入未知 `change_id`，当前应返回 `409`，这是为了避免 bridge 把错误 ack 静默写进状态
+
+开发和联调时应以“文档指导实现，但不误导当前已上线能力”为原则。
