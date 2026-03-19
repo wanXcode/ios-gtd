@@ -13,12 +13,20 @@ FastAPI + SQLAlchemy + Alembic backend for the iOS GTD MVP. This version is aime
   - `GET /api/assistant/views/waiting`
 - soft-delete-first task deletion strategy
 - operation log recording for task create/update/complete/reopen/delete/batch-update/assistant_capture
-- placeholder sync endpoints:
+- Apple sync test-build endpoints:
   - `POST /api/sync/apple/pull`
   - `POST /api/sync/apple/push`
   - `POST /api/sync/apple/ack`
-- Alembic migration for initial schema
-- local test coverage for the main task lifecycle, assistant endpoints, and sync placeholders
+- sync-oriented task / mapping fields:
+  - `tasks.is_all_day_due`
+  - `tasks.sync_change_id`
+  - `tasks.sync_pending`
+  - `tasks.sync_last_pushed_at`
+  - `apple_reminder_mappings.pending_operation`
+  - `apple_reminder_mappings.last_push_change_id`
+  - `apple_reminder_mappings.last_ack_status`
+- Alembic migrations for initial schema + sync bridge fields
+- local test coverage for the main task lifecycle and sync pull/push/ack flow
 
 ## Quick start
 
@@ -136,15 +144,26 @@ Example capture request:
 }
 ```
 
-## Sync placeholder contract
+## Sync bridge contract (test build)
 
-These endpoints are intentionally minimal but runnable, testable, and stable enough for bridge-side contract work.
+These endpoints are now closer to a real bridge contract and are usable for Mac Sync Bridge integration work.
 
-- `POST /api/sync/apple/pull`: currently returns placeholder pull payload
-- `POST /api/sync/apple/push`: returns task snapshots for requested IDs
-- `POST /api/sync/apple/ack`: records/updates Apple mapping acknowledgements
+- `POST /api/sync/apple/pull`
+  - accepts remote `changes[]` from Apple side
+  - supports `upsert` and `delete`
+  - creates/updates local tasks and Apple mappings
+  - marks sync conflicts conservatively instead of overwriting blindly
+- `POST /api/sync/apple/push`
+  - returns local tasks that still have `sync_pending=true`
+  - includes `change_id`, `operation`, mapping info, and task snapshot
+  - records `sync_last_pushed_at`
+- `POST /api/sync/apple/ack`
+  - updates mapping after bridge write-back
+  - clears pending state on success
+  - preserves pending state on failure
+  - marks mapping as conflict on conflict ack
 
-They also create `sync_runs` records so test deployments can inspect sync activity.
+All three endpoints also create `sync_runs` rows so test deployments can inspect sync activity.
 
 ## Testing
 

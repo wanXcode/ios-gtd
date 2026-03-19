@@ -49,7 +49,10 @@ def _serialize_task(task: Task) -> dict:
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "deleted_at": task.deleted_at.isoformat() if task.deleted_at else None,
         "version": task.version,
+        "sync_change_id": task.sync_change_id,
+        "sync_pending": task.sync_pending,
         "last_modified_by": task.last_modified_by,
+        "is_all_day_due": task.is_all_day_due,
     }
 
 
@@ -73,10 +76,13 @@ def _log_operation(
     )
 
 
-def _touch_task(task: Task, actor: str | None) -> None:
+def _touch_task(task: Task, actor: str | None, *, mark_sync_pending: bool = True) -> None:
     if actor:
         task.last_modified_by = actor
     task.version += 1
+    if mark_sync_pending:
+        task.sync_change_id += 1
+        task.sync_pending = True
 
 
 def _apply_task_updates(db: Session, task: Task, payload: TaskUpdate) -> dict:
@@ -149,6 +155,7 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)) -> Task:
         source_ref=payload.source_ref,
         project_id=payload.project_id,
         last_modified_by=payload.last_modified_by,
+        is_all_day_due=payload.is_all_day_due,
     )
     _apply_tags(db, task, payload.tag_ids)
     db.add(task)

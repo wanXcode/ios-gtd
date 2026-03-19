@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text, func
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -32,6 +32,10 @@ class Task(Base):
     source: Mapped[str | None] = mapped_column(String(32))
     source_ref: Mapped[str | None] = mapped_column(Text())
     project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
+    is_all_day_due: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    sync_change_id: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    sync_pending: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    sync_last_pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     last_modified_by: Mapped[str] = mapped_column(String(32), default="system", nullable=False)

@@ -185,7 +185,11 @@ MVP 建议至少统一以下错误码语义：
 - `priority`：1-9，数字越大表示优先级越高
 - `source`：数据来源，例如 `chat`、`apple_sync`、`api`
 - `source_ref`：来源侧引用，例如消息 ID、Reminder ID、导入批次号
-- `version`：乐观并发版本号；后续 PATCH / sync 写入建议带上
+- `version`：任务业务版本号，本地每次有效修改都会递增
+- `sync_change_id`：面向 Bridge 的单调递增变更序号，用于增量推送与 ack 对账
+- `sync_pending`：该任务是否仍有待 Bridge 回写到 Apple 的本地改动
+- `sync_last_pushed_at`：最近一次被 push 接口下发给 Bridge 的时间
+- `is_all_day_due`：due_at 是否语义上属于“全天日期”而非精确时刻
 
 ## 2.2 Project
 
@@ -211,7 +215,7 @@ MVP 建议至少统一以下错误码语义：
 }
 ```
 
-## 2.4 AppleReminderMapping（规划中）
+## 2.4 AppleReminderMapping（已部分实现）
 
 ```json
 {
@@ -228,7 +232,7 @@ MVP 建议至少统一以下错误码语义：
 }
 ```
 
-## 2.5 SyncRun（规划中）
+## 2.5 SyncRun（已部分实现）
 
 ```json
 {
@@ -840,7 +844,7 @@ HTTP 状态码：`409 Conflict`
 
 ## 7.3 POST /sync/apple/pull
 
-状态：`规划中`
+状态：`已实现（测试版）`
 
 用途：由 Sync Bridge 把 Apple Reminders 侧增量变更提交给后端。
 
@@ -882,6 +886,14 @@ HTTP 状态码：`409 Conflict`
 - `upsert`：新增或更新 Reminder
 - `delete`：Apple 侧已删除
 
+### 当前测试版语义
+
+- `pull` 直接接收 `changes[]`，支持 `upsert` / `delete`
+- 若 `apple_reminder_id` 已有 mapping，则尝试更新既有任务
+- 若无 mapping 且为 `upsert`，后端会新建 task + mapping
+- 若本地任务仍处于 `sync_pending=true`，且远端修改时间晚于上次看到的 Apple 时间，同时本地任务也在 mapping 更新时间后发生过本地修改，则标记为 `conflict`
+- `delete` 会把本地 task 软删除，而不是物理删除
+
 ### 响应示例
 
 ```json
@@ -914,7 +926,7 @@ MVP 建议先采用保守策略：
 
 ## 7.4 GET /sync/apple/push
 
-状态：`规划中`
+状态：`已实现（测试版）`
 
 用途：由 Sync Bridge 拉取“服务端待回写到 Apple Reminders”的任务变更。
 
@@ -962,15 +974,23 @@ MVP 建议先采用保守策略：
 }
 ```
 
+### 当前测试版语义
+
+- `push` 当前为 POST，便于后续带上 Bridge 已知版本、游标和能力信息
+- 默认会返回 `sync_pending=true` 的任务，或 mapping 上仍有 `pending_operation` 的任务
+- 返回字段中已包含 `change_id`、mapping、task 快照和 `operation`
+- `operation` 当前可能是 `upsert` / `complete` / `delete`
+- `push` 会记录 `sync_last_pushed_at`，但不会因为“仅下发未 ack”就清掉 pending
+
 ### operation
 
 - `upsert`
 - `delete`
-- `complete`（可选；也可以统一视作 upsert）
+- `complete`
 
 ## 7.5 POST /sync/apple/ack
 
-状态：`规划中`
+状态：`已实现（测试版）`
 
 用途：Sync Bridge 在成功写回 Apple Reminders 后确认 ack，更新 mapping 与出队状态。
 
@@ -998,6 +1018,13 @@ MVP 建议先采用保守策略：
   ]
 }
 ```
+
+### 当前测试版语义
+
+- `ack` 支持 `success` / `acked` / `failed` / `conflict`
+- `success|acked`：更新 mapping、清除 `sync_pending`、更新 `last_synced_task_version` 与 `last_push_change_id`
+- `failed`：保留 `sync_pending=true`，等待后续重试
+- `conflict`：mapping 会进入 `sync_state=conflict`
 
 ### 响应示例
 

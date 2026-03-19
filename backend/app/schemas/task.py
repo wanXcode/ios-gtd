@@ -22,6 +22,7 @@ class TaskCreate(BaseModel):
     project_id: UUID | None = None
     tag_ids: list[UUID] = Field(default_factory=list)
     last_modified_by: str = "api"
+    is_all_day_due: bool = False
 
 
 class TaskUpdate(BaseModel):
@@ -39,6 +40,7 @@ class TaskUpdate(BaseModel):
     project_id: UUID | None = None
     tag_ids: list[UUID] | None = None
     last_modified_by: str | None = None
+    is_all_day_due: bool | None = None
 
 
 class TaskBatchUpdateItem(BaseModel):
@@ -64,6 +66,10 @@ class TaskRead(ORMModel):
     source: str | None = None
     source_ref: str | None = None
     project_id: UUID | None = None
+    is_all_day_due: bool = False
+    sync_change_id: int
+    sync_pending: bool
+    sync_last_pushed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     last_modified_by: str

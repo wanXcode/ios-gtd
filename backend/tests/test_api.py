@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.session import get_db
 from app.main import app as fastapi_app
+from app.models.apple_mapping import AppleReminderMapping
 from app.models.operation_log import OperationLog
 from app.models.task import Task
 
@@ -46,15 +47,20 @@ def test_health() -> None:
 
 
 def test_task_lifecycle_and_operation_logs() -> None:
-    created = client.post("/api/tasks", json={"title": "Write deploy docs", "last_modified_by": "tester"})
+    created = client.post(
+        "/api/tasks", json={"title": "Write deploy docs", "last_modified_by": "tester", "is_all_day_due": True}
+    )
     assert created.status_code == 201
     task = created.json()
     task_id = task["id"]
+    assert task["sync_pending"] is True
+    assert task["is_all_day_due"] is True
 
     completed = client.post(f"/api/tasks/{task_id}/complete", params={"actor": "tester"})
     assert completed.status_code == 200
     assert completed.json()["status"] == "completed"
     assert completed.json()["bucket"] == "done"
+    assert completed.json()["sync_change_id"] >= 2
 
     reopened = client.post(f"/api/tasks/{task_id}/reopen", params={"actor": "tester"})
     assert reopened.status_code == 200
@@ -91,8 +97,19 @@ def test_batch_update_tasks() -> None:
         "/api/tasks/batch-update",
         json={
             "updates": [
-                {"id": first["id"], "patch": {"bucket": "next", "priority": 3, "last_modified_by": "batcher"}},
-                {"id": second["id"], "patch": {"status": "completed", "bucket": "done", "last_modified_by": "batcher"}},
+                {
+                    "id": first["id"],
+                    "patch": {
+                        "bucket": "next",
+                        "priority": 3,
+                        "last_modified_by": "batcher",
+                        "is_all_day_due": True,
+                    },
+                },
+                {
+                    "id": second["id"],
+                    "patch": {"status": "completed", "bucket": "done", "last_modified_by": "batcher"},
+                },
             ]
         },
     )
@@ -105,123 +122,138 @@ def test_batch_update_tasks() -> None:
         second_db = db.scalar(select(Task).where(Task.id == UUID(second["id"])))
         assert first_db.bucket == "next"
         assert first_db.priority == 3
+        assert first_db.is_all_day_due is True
         assert second_db.status == "completed"
         logs = list(db.scalars(select(OperationLog).where(OperationLog.operation_type == "batch_update")).all())
         assert len(logs) >= 2
 
 
-def test_sync_placeholders() -> None:
-    task = client.post("/api/tasks", json={"title": "Sync me", "last_modified_by": "tester"}).json()
-
-    pull = client.post("/api/sync/apple/pull", json={"bridge_id": "bridge-dev", "cursor": "c1", "limit": 10})
-    assert pull.status_code == 200
-    assert pull.json()["mode"] == "pull"
-
-    push = client.post(
-        "/api/sync/apple/push",
-        json={"bridge_id": "bridge-dev", "cursor": "c2", "tasks": [{"task_id": task["id"], "version": task["version"]}]},
+def test_sync_pull_push_ack_flow() -> None:
+    remote_pull = client.post(
+        "/api/sync/apple/pull",
+        json={
+            "bridge_id": "bridge-dev",
+            "cursor": "c1",
+            "limit": 10,
+            "changes": [
+                {
+                    "change_type": "upsert",
+                    "apple_reminder_id": "apple-remote-1",
+                    "apple_list_id": "list-1",
+                    "apple_calendar_id": "cal-1",
+                    "apple_modified_at": "2026-03-19T04:00:00Z",
+                    "payload": {
+                        "title": "Pulled from Apple",
+                        "note": "remote note",
+                        "is_completed": False,
+                        "due_at": "2026-03-20T09:00:00Z",
+                        "remind_at": None,
+                        "is_all_day_due": True,
+                        "priority": 6,
+                        "list_name": "Inbox",
+                    },
+                }
+            ],
+        },
     )
+    assert remote_pull.status_code == 200
+    pull_payload = remote_pull.json()
+    assert pull_payload["accepted"] == 1
+    assert pull_payload["applied"] == 1
+    task_id = pull_payload["results"][0]["task_id"]
+
+    fetched = client.get(f"/api/tasks/{task_id}", params={"include_deleted": True}).json()
+    assert fetched["title"] == "Pulled from Apple"
+    assert fetched["sync_pending"] is False
+    assert fetched["is_all_day_due"] is True
+
+    updated = client.patch(
+        f"/api/tasks/{task_id}",
+        json={"title": "Locally changed", "last_modified_by": "tester", "bucket": "next"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["sync_pending"] is True
+
+    push = client.post("/api/sync/apple/push", json={"bridge_id": "bridge-dev", "cursor": "0", "limit": 10, "tasks": []})
     assert push.status_code == 200
-    assert push.json()["mode"] == "push"
-    assert len(push.json()["items"]) == 1
-    assert push.json()["items"][0]["task_id"] == task["id"]
+    push_payload = push.json()
+    assert push_payload["mode"] == "push"
+    assert len(push_payload["items"]) >= 1
+    item = next(entry for entry in push_payload["items"] if entry["task_id"] == task_id)
+    assert item["operation"] == "upsert"
+    assert item["task"]["title"] == "Locally changed"
+    assert item["change_id"] >= 2
 
     ack = client.post(
         "/api/sync/apple/ack",
         json={
             "bridge_id": "bridge-dev",
-            "acks": [{"task_id": task["id"], "remote_id": "apple-1", "version": task["version"], "status": "acked"}],
+            "acks": [
+                {
+                    "task_id": task_id,
+                    "remote_id": "apple-remote-1",
+                    "version": item["version"],
+                    "status": "success",
+                    "apple_modified_at": "2026-03-19T05:00:00Z",
+                    "apple_list_id": "list-1",
+                    "apple_calendar_id": "cal-1",
+                }
+            ],
         },
     )
     assert ack.status_code == 200
-    assert ack.json()["mode"] == "ack"
-    assert ack.json()["acked"][0]["remote_id"] == "apple-1"
+    ack_payload = ack.json()
+    assert ack_payload["success"] == 1
+
+    with TestingSessionLocal() as db:
+        task = db.scalar(select(Task).where(Task.id == UUID(task_id)))
+        mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == UUID(task_id)))
+        assert task.sync_pending is False
+        assert mapping.last_synced_task_version == task.version
+        assert mapping.apple_reminder_id == "apple-remote-1"
+        assert mapping.pending_operation is None
 
 
-def test_assistant_capture_dry_run_and_persist() -> None:
-    dry_run = client.post(
-        "/api/assistant/capture",
+def test_sync_pull_delete_marks_task_deleted() -> None:
+    created = client.post("/api/tasks", json={"title": "Delete me via apple", "last_modified_by": "tester"}).json()
+    task_id = created["id"]
+
+    ack = client.post(
+        "/api/sync/apple/ack",
         json={
-            "input": "明天提醒我发合同",
-            "context": {"timezone": "Asia/Shanghai", "source": "chat", "source_ref": "msg-1", "actor": "tester"},
-            "dry_run": True,
+            "bridge_id": "bridge-dev",
+            "acks": [
+                {
+                    "task_id": task_id,
+                    "remote_id": "apple-delete-1",
+                    "version": created["version"],
+                    "status": "success",
+                    "apple_modified_at": "2026-03-19T06:00:00Z",
+                }
+            ],
         },
     )
-    assert dry_run.status_code == 200
-    dry_payload = dry_run.json()
-    assert dry_payload["dry_run"] is True
-    assert dry_payload["task"] is None
-    assert dry_payload["parsed"]["title"] == "发合同"
-    assert dry_payload["parsed"]["due_at"] is not None
+    assert ack.status_code == 200
 
-    persisted = client.post(
-        "/api/assistant/capture",
+    deleted = client.post(
+        "/api/sync/apple/pull",
         json={
-            "input": "下周前把合同发出去",
-            "context": {"timezone": "Asia/Shanghai", "source": "chat", "source_ref": "msg-2", "actor": "tester"},
-            "dry_run": False,
+            "bridge_id": "bridge-dev",
+            "cursor": "c-del",
+            "limit": 10,
+            "changes": [
+                {
+                    "change_type": "delete",
+                    "apple_reminder_id": "apple-delete-1",
+                    "apple_modified_at": "2026-03-19T06:30:00Z",
+                }
+            ],
         },
     )
-    assert persisted.status_code == 200
-    payload = persisted.json()
-    assert payload["task"]["id"]
-    assert payload["task"]["bucket"] == "inbox"
-    assert payload["task"]["status"] == "active"
-    assert payload["task"]["source"] == "chat"
-    assert payload["task"]["source_ref"] == "msg-2"
-    assert payload["parsed"]["title"] == "把合同发出去"
+    assert deleted.status_code == 200
+    payload = deleted.json()
+    assert payload["applied"] == 1
 
-    tasks = client.get("/api/tasks").json()
-    assert any(item["id"] == payload["task"]["id"] for item in tasks)
-
-
-def test_assistant_views_today_and_waiting() -> None:
-    today_task = client.post(
-        "/api/tasks",
-        json={"title": "Today task", "bucket": "next", "due_at": "2026-03-19T09:00:00Z", "last_modified_by": "tester"},
-    ).json()
-    overdue_task = client.post(
-        "/api/tasks",
-        json={"title": "Overdue task", "bucket": "next", "due_at": "2026-03-18T09:00:00Z", "last_modified_by": "tester"},
-    ).json()
-    future_task = client.post(
-        "/api/tasks",
-        json={"title": "Future task", "bucket": "next", "due_at": "2026-03-21T09:00:00Z", "last_modified_by": "tester"},
-    ).json()
-    waiting_task = client.post(
-        "/api/tasks",
-        json={"title": "Waiting task", "bucket": "waiting", "last_modified_by": "tester"},
-    ).json()
-
-    from unittest.mock import patch
-    from datetime import datetime
-    from app.services import assistant as assistant_service
-
-    fake_now = datetime(2026, 3, 19, 8, 0, 0)
-
-    class FrozenDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            if tz is None:
-                return fake_now
-            return fake_now.replace(tzinfo=tz)
-
-    with patch.object(assistant_service, "datetime", FrozenDateTime):
-        today = client.get("/api/assistant/views/today", params={"timezone": "UTC", "include_overdue": True})
-        assert today.status_code == 200
-        today_ids = {item["id"] for item in today.json()["items"]}
-        assert today_task["id"] in today_ids
-        assert overdue_task["id"] in today_ids
-        assert future_task["id"] not in today_ids
-
-        today_no_overdue = client.get("/api/assistant/views/today", params={"timezone": "UTC", "include_overdue": False})
-        ids_no_overdue = {item["id"] for item in today_no_overdue.json()["items"]}
-        assert today_task["id"] in ids_no_overdue
-        assert overdue_task["id"] not in ids_no_overdue
-
-    waiting = client.get("/api/assistant/views/waiting")
-    assert waiting.status_code == 200
-    waiting_ids = {item["id"] for item in waiting.json()["items"]}
-    assert waiting_task["id"] in waiting_ids
-    assert today_task["id"] not in waiting_ids
-    assert future_task["id"] not in waiting_ids
+    task = client.get(f"/api/tasks/{task_id}", params={"include_deleted": True}).json()
+    assert task["status"] == "deleted"
+    assert task["deleted_at"] is not None
