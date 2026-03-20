@@ -63,10 +63,11 @@ public actor SyncCoordinator {
             pushResponse = PushChangesResponse(accepted: [], items: [])
         } else {
             pushRequestTasks = plan.remoteMutations
+            let safePushCursor = checkpoint.lastAckedChangeID.map(String.init)
             pushResponse = try await dependencies.backendClient.pushChanges(
                 request: PushChangesRequest(
                     bridgeID: dependencies.bridgeID,
-                    cursor: checkpoint.lastPushCursor,
+                    cursor: safePushCursor,
                     tasks: pushRequestTasks
                 )
             )
