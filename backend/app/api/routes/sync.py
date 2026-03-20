@@ -97,9 +97,42 @@ def _get_or_create_bridge_state(db: Session, bridge_id: str) -> SyncBridgeState:
     return state
 
 
-def _get_or_create_delivery(
+def _allocate_delivery_seq(state: SyncBridgeState) -> int:
+    next_seq = state.next_delivery_seq or 1
+    state.next_delivery_seq = next_seq + 1
+    state.last_seen_delivery_seq = max(state.last_seen_delivery_seq or 0, next_seq)
+    return next_seq
+
+
+def _mark_superseded_pending_deliveries(
     db: Session,
     *,
+    bridge_id: str,
+    task_id: str,
+    current_delivery_id,
+) -> None:
+    pending = list(
+        db.scalars(
+            select(SyncDelivery).where(
+                SyncDelivery.bridge_id == bridge_id,
+                SyncDelivery.task_id == task_id,
+                SyncDelivery.status == "pending",
+                SyncDelivery.delivery_id != current_delivery_id,
+            )
+        ).all()
+    )
+    for previous in pending:
+        previous.status = "superseded"
+        previous.superseded_by_delivery_id = current_delivery_id
+        previous.failed_at = previous.failed_at or _now()
+        db.add(previous)
+
+
+
+def _create_delivery(
+    db: Session,
+    *,
+    state: SyncBridgeState,
     bridge_id: str,
     task_id: str,
     change_id: int,
@@ -107,28 +140,10 @@ def _get_or_create_delivery(
     operation: str,
     remote_id: str | None = None,
 ) -> SyncDelivery:
-    delivery = db.scalar(
-        select(SyncDelivery).where(
-            SyncDelivery.bridge_id == bridge_id,
-            SyncDelivery.task_id == task_id,
-            SyncDelivery.change_id == change_id,
-        )
-    )
     now = _now()
-    if delivery:
-        delivery.attempt_count += 1
-        delivery.last_pushed_at = now
-        delivery.status = "pending"
-        delivery.failed_at = None
-        delivery.acked_at = None
-        delivery.task_version = version
-        delivery.operation = operation
-        delivery.remote_id = remote_id or delivery.remote_id
-        db.add(delivery)
-        return delivery
-
     delivery = SyncDelivery(
         bridge_id=bridge_id,
+        delivery_seq=_allocate_delivery_seq(state),
         task_id=task_id,
         change_id=change_id,
         task_version=version,
@@ -141,6 +156,28 @@ def _get_or_create_delivery(
     )
     db.add(delivery)
     db.flush()
+    _mark_superseded_pending_deliveries(db, bridge_id=bridge_id, task_id=task_id, current_delivery_id=delivery.delivery_id)
+    return delivery
+
+
+def _requeue_delivery(
+    db: Session,
+    *,
+    delivery: SyncDelivery,
+    version: int,
+    operation: str,
+    remote_id: str | None = None,
+) -> SyncDelivery:
+    delivery.attempt_count += 1
+    delivery.last_pushed_at = _now()
+    delivery.status = "pending"
+    delivery.failed_at = None
+    delivery.acked_at = None
+    delivery.task_version = version
+    delivery.operation = operation
+    delivery.remote_id = remote_id or delivery.remote_id
+    delivery.superseded_by_delivery_id = None
+    db.add(delivery)
     return delivery
 
 
@@ -177,6 +214,10 @@ def _serialize_bridge_state(state: SyncBridgeState, db: Session) -> SyncBridgeSt
         last_acked_change_id=state.last_acked_change_id,
         last_failed_change_id=state.last_failed_change_id,
         last_seen_change_id=state.last_seen_change_id,
+        next_delivery_seq=state.next_delivery_seq,
+        last_acked_delivery_seq=state.last_acked_delivery_seq,
+        last_failed_delivery_seq=state.last_failed_delivery_seq,
+        last_seen_delivery_seq=state.last_seen_delivery_seq,
         pending_delivery_count=pending_delivery_count or 0,
         last_pull_started_at=state.last_pull_started_at,
         last_pull_succeeded_at=state.last_pull_succeeded_at,
@@ -190,6 +231,8 @@ def _serialize_bridge_state(state: SyncBridgeState, db: Session) -> SyncBridgeSt
         recent_deliveries=[
             SyncBridgeDeliverySummary(
                 task_id=delivery.task_id,
+                delivery_id=delivery.delivery_id,
+                delivery_seq=delivery.delivery_seq,
                 change_id=delivery.change_id,
                 task_version=delivery.task_version,
                 operation=delivery.operation,
@@ -211,6 +254,80 @@ def _serialize_bridge_state(state: SyncBridgeState, db: Session) -> SyncBridgeSt
     )
 
 
+def _find_task_for_apple_identity(
+    db: Session,
+    *,
+    apple_reminder_id: str,
+    source_candidates: list[str],
+) -> tuple[Task | None, AppleReminderMapping | None, str | None]:
+    mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.apple_reminder_id == apple_reminder_id))
+    task = db.scalar(select(Task).where(Task.id == mapping.task_id)) if mapping else None
+    if task is not None:
+        return task, mapping, "mapping"
+
+    if source_candidates:
+        paired_task = db.scalar(
+            select(Task)
+            .where(Task.source_ref.in_(source_candidates))
+            .order_by(Task.updated_at.desc(), Task.created_at.desc())
+        )
+        if paired_task is not None:
+            if mapping is None:
+                mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == paired_task.id))
+            return paired_task, mapping, "source_hint"
+
+    return None, mapping, None
+
+
+def _ensure_mapping_for_task(
+    db: Session,
+    *,
+    task: Task,
+    mapping: AppleReminderMapping | None,
+    apple_reminder_id: str,
+    apple_list_id: str | None,
+    apple_calendar_id: str | None,
+    apple_modified_at,
+    now,
+    last_ack_status: str,
+    last_delivery_status: str,
+) -> AppleReminderMapping:
+    if mapping is None:
+        mapping = AppleReminderMapping(
+            task_id=task.id,
+            apple_reminder_id=apple_reminder_id,
+            apple_list_id=apple_list_id,
+            apple_calendar_id=apple_calendar_id,
+            last_synced_task_version=task.version,
+            last_seen_apple_modified_at=_normalize_dt(apple_modified_at),
+            sync_state=SyncState.ACTIVE.value,
+            pending_operation=None,
+            bridge_updated_at=now,
+            last_ack_status=last_ack_status,
+            last_delivery_status=last_delivery_status,
+        )
+        db.add(mapping)
+        db.flush()
+        return mapping
+
+    mapping.apple_reminder_id = apple_reminder_id
+    mapping.apple_list_id = apple_list_id
+    mapping.apple_calendar_id = apple_calendar_id
+    mapping.last_synced_task_version = task.version
+    mapping.last_seen_apple_modified_at = _normalize_dt(apple_modified_at)
+    mapping.sync_state = SyncState.ACTIVE.value
+    mapping.pending_operation = None
+    mapping.bridge_updated_at = now
+    mapping.last_ack_status = last_ack_status
+    mapping.last_delivery_status = last_delivery_status
+    mapping.last_error_code = None
+    mapping.last_error_message = None
+    mapping.is_deleted_on_apple = False
+    db.add(mapping)
+    db.flush()
+    return mapping
+
+
 def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str, str, Task | None]:
     source_candidates = [
         candidate
@@ -222,37 +339,25 @@ def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str,
         if candidate
     ]
 
-    mapping = db.scalar(
-        select(AppleReminderMapping).where(AppleReminderMapping.apple_reminder_id == change.apple_reminder_id)
+    task, mapping, matched_by = _find_task_for_apple_identity(
+        db,
+        apple_reminder_id=change.apple_reminder_id,
+        source_candidates=source_candidates,
     )
-    task = db.scalar(select(Task).where(Task.id == mapping.task_id)) if mapping else None
 
-    if not task and source_candidates:
-        paired_task = db.scalar(
-            select(Task)
-            .where(Task.source_ref.in_(source_candidates))
-            .order_by(Task.updated_at.desc(), Task.created_at.desc())
+    if task is not None and matched_by == "source_hint":
+        mapping = _ensure_mapping_for_task(
+            db,
+            task=task,
+            mapping=mapping,
+            apple_reminder_id=change.apple_reminder_id,
+            apple_list_id=change.apple_list_id,
+            apple_calendar_id=change.apple_calendar_id,
+            apple_modified_at=change.apple_modified_at,
+            now=_now(),
+            last_ack_status="paired",
+            last_delivery_status="acknowledged",
         )
-        if paired_task is not None:
-            task = paired_task
-            if mapping is None:
-                mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == task.id))
-            if mapping is None:
-                mapping = AppleReminderMapping(
-                    task_id=task.id,
-                    apple_reminder_id=change.apple_reminder_id,
-                    apple_list_id=change.apple_list_id,
-                    apple_calendar_id=change.apple_calendar_id,
-                    last_synced_task_version=task.version,
-                    last_seen_apple_modified_at=_normalize_dt(change.apple_modified_at),
-                    sync_state=SyncState.ACTIVE.value,
-                    pending_operation=None,
-                    bridge_updated_at=_now(),
-                    last_ack_status="paired",
-                    last_delivery_status="acknowledged",
-                )
-                db.add(mapping)
-                db.flush()
 
     if mapping and task:
         remote_modified_at = _normalize_dt(change.apple_modified_at)
@@ -313,20 +418,18 @@ def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str,
         )
         db.add(task)
         db.flush()
-        mapping = AppleReminderMapping(
-            task_id=task.id,
+        mapping = _ensure_mapping_for_task(
+            db,
+            task=task,
+            mapping=None,
             apple_reminder_id=change.apple_reminder_id,
             apple_list_id=change.apple_list_id,
             apple_calendar_id=change.apple_calendar_id,
-            last_synced_task_version=task.version,
-            last_seen_apple_modified_at=_normalize_dt(change.apple_modified_at),
-            sync_state=SyncState.ACTIVE.value,
-            pending_operation=None,
-            bridge_updated_at=_now(),
+            apple_modified_at=change.apple_modified_at,
+            now=_now(),
             last_ack_status="success",
             last_delivery_status="acknowledged",
         )
-        db.add(mapping)
         return "applied", "created", task
 
     task.title = change.payload.title
@@ -335,8 +438,6 @@ def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str,
     task.due_at = _normalize_dt(change.payload.due_at)
     task.remind_at = _normalize_dt(change.payload.remind_at)
     task.is_all_day_due = change.payload.is_all_day_due
-    task.source = "apple_sync"
-    task.source_ref = change.source_record_id or change.external_identifier or change.apple_reminder_id
     task.last_modified_by = "apple_sync"
     task.deleted_at = None
     task.sync_pending = False
@@ -352,18 +453,18 @@ def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str,
         task.completed_at = None
     task.version += 1
 
-    mapping.apple_list_id = change.apple_list_id
-    mapping.apple_calendar_id = change.apple_calendar_id
-    mapping.last_seen_apple_modified_at = _normalize_dt(change.apple_modified_at)
-    mapping.last_synced_task_version = task.version
-    mapping.sync_state = SyncState.ACTIVE.value
-    mapping.pending_operation = None
-    mapping.bridge_updated_at = _now()
-    mapping.last_ack_status = "success"
-    mapping.last_delivery_status = "acknowledged"
-    mapping.last_error_code = None
-    mapping.last_error_message = None
-    mapping.is_deleted_on_apple = False
+    mapping = _ensure_mapping_for_task(
+        db,
+        task=task,
+        mapping=mapping,
+        apple_reminder_id=change.apple_reminder_id,
+        apple_list_id=change.apple_list_id,
+        apple_calendar_id=change.apple_calendar_id,
+        apple_modified_at=change.apple_modified_at,
+        now=_now(),
+        last_ack_status="success",
+        last_delivery_status="acknowledged",
+    )
     db.add(task)
     db.add(mapping)
     return "applied", "updated", task
@@ -461,52 +562,87 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
     for item in payload.tasks:
         if item.task_id is not None:
             continue
-        existing_mapping = db.scalar(
-            select(AppleReminderMapping).where(AppleReminderMapping.apple_reminder_id == item.reminder_id)
+
+        source_candidates = [candidate for candidate in (item.external_identifier, item.reminder_id) if candidate]
+        task, mapping, matched_by = _find_task_for_apple_identity(
+            db,
+            apple_reminder_id=item.reminder_id,
+            source_candidates=source_candidates,
         )
-        if existing_mapping is not None:
+        if mapping is not None and task is not None and matched_by == "mapping":
             continue
 
         now = _now()
         is_completed = item.state == "completed"
         is_deleted = item.state == "deleted"
-        task = Task(
-            title=item.title,
-            note=item.notes,
-            status=TaskStatus.DELETED.value if is_deleted else (TaskStatus.COMPLETED.value if is_completed else TaskStatus.ACTIVE.value),
-            bucket=TaskBucket.DONE.value if is_completed else TaskBucket.INBOX.value,
-            priority=item.priority,
-            due_at=_normalize_dt(item.due_date),
-            remind_at=_normalize_dt(item.remind_at),
-            completed_at=_normalize_dt(item.last_modified_at) if is_completed else None,
-            deleted_at=_normalize_dt(item.last_modified_at) if is_deleted else None,
-            source="apple_sync",
-            source_ref=item.reminder_id,
-            last_modified_by="apple_sync_push",
-            is_all_day_due=item.is_all_day_due,
-            sync_pending=False,
-            sync_last_pushed_at=now,
-        )
-        db.add(task)
-        db.flush()
+        created_from_bridge = False
+        identity_resolution = matched_by or "new_task"
 
-        mapping = AppleReminderMapping(
-            task_id=task.id,
+        if task is None:
+            task = Task(
+                title=item.title,
+                note=item.notes,
+                status=TaskStatus.DELETED.value if is_deleted else (TaskStatus.COMPLETED.value if is_completed else TaskStatus.ACTIVE.value),
+                bucket=TaskBucket.DONE.value if is_completed else TaskBucket.INBOX.value,
+                priority=item.priority,
+                due_at=_normalize_dt(item.due_date),
+                remind_at=_normalize_dt(item.remind_at),
+                completed_at=_normalize_dt(item.last_modified_at) if is_completed else None,
+                deleted_at=_normalize_dt(item.last_modified_at) if is_deleted else None,
+                source="apple_sync",
+                source_ref=item.reminder_id,
+                last_modified_by="apple_sync_push",
+                is_all_day_due=item.is_all_day_due,
+                sync_pending=False,
+                sync_last_pushed_at=now,
+            )
+            db.add(task)
+            db.flush()
+            created += 1
+            created_from_bridge = True
+        else:
+            task.title = item.title
+            task.note = item.notes
+            task.priority = item.priority
+            task.due_at = _normalize_dt(item.due_date)
+            task.remind_at = _normalize_dt(item.remind_at)
+            task.is_all_day_due = item.is_all_day_due
+            task.last_modified_by = "apple_sync_push"
+            task.sync_pending = False
+            task.sync_last_pushed_at = now
+            task.deleted_at = _normalize_dt(item.last_modified_at) if is_deleted else None
+            if is_deleted:
+                task.status = TaskStatus.DELETED.value
+                task.completed_at = None
+            elif is_completed:
+                task.status = TaskStatus.COMPLETED.value
+                task.bucket = TaskBucket.DONE.value
+                task.completed_at = _normalize_dt(item.last_modified_at) or now
+            else:
+                task.status = TaskStatus.ACTIVE.value
+                if task.bucket == TaskBucket.DONE.value:
+                    task.bucket = TaskBucket.INBOX.value
+                task.completed_at = None
+            task.version += 1
+            db.add(task)
+
+        mapping = _ensure_mapping_for_task(
+            db,
+            task=task,
+            mapping=mapping,
             apple_reminder_id=item.reminder_id,
             apple_list_id=item.list_identifier,
             apple_calendar_id=item.list_identifier,
-            last_synced_task_version=task.version,
-            last_seen_apple_modified_at=_normalize_dt(item.last_modified_at),
-            sync_state=SyncState.DELETED.value if is_deleted else SyncState.ACTIVE.value,
-            pending_operation=None,
-            last_push_change_id=task.sync_change_id,
-            last_acked_change_id=task.sync_change_id,
-            bridge_updated_at=now,
-            last_ack_status="success",
+            apple_modified_at=item.last_modified_at,
+            now=now,
+            last_ack_status="success" if created_from_bridge else ("paired" if identity_resolution == "source_hint" else "success"),
             last_delivery_status="acknowledged",
-            last_delivery_attempt_count=1,
-            is_deleted_on_apple=is_deleted,
         )
+        mapping.last_push_change_id = task.sync_change_id
+        mapping.last_acked_change_id = task.sync_change_id
+        mapping.last_delivery_attempt_count = 1
+        mapping.is_deleted_on_apple = is_deleted
+        mapping.sync_state = SyncState.DELETED.value if is_deleted else SyncState.ACTIVE.value
         db.add(mapping)
         accepted.append(
             {
@@ -515,9 +651,10 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
                 "change_id": task.sync_change_id,
                 "operation": _mapping_operation(mapping, task),
                 "task": _serialize_push_item(task, mapping)["task"],
+                "created_from_bridge": created_from_bridge,
+                "identity_resolution": identity_resolution,
             }
         )
-        created += 1
 
     replay_deliveries = list(
         db.scalars(
@@ -560,18 +697,22 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
         requested_version = requested_versions.get(task.id)
         if requested_version is not None and requested_version >= task.version:
             continue
-        items.append(_serialize_push_item(task, mapping))
+        replay_item = _serialize_push_item(task, mapping)
+        replay_item["delivery_id"] = str(delivery.delivery_id)
+        replay_item["delivery_seq"] = delivery.delivery_seq
+        items.append(replay_item)
         replayed_keys.add((str(task.id), delivery.change_id))
         returned += 1
         max_seen_change_id = max(max_seen_change_id, delivery.change_id)
+        state.last_seen_delivery_seq = max(state.last_seen_delivery_seq or 0, delivery.delivery_seq)
         task.sync_last_pushed_at = _now()
-        delivery.attempt_count += 1
-        delivery.last_pushed_at = _now()
-        delivery.status = "pending"
-        delivery.failed_at = None
-        delivery.acked_at = None
-        delivery.task_version = task.version
-        delivery.operation = _mapping_operation(mapping, task)
+        _requeue_delivery(
+            db,
+            delivery=delivery,
+            version=task.version,
+            operation=_mapping_operation(mapping, task),
+            remote_id=mapping.apple_reminder_id if mapping else None,
+        )
         if mapping:
             previous_delivery_status = mapping.last_delivery_status
             delivery.remote_id = mapping.apple_reminder_id or delivery.remote_id
@@ -596,14 +737,10 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
             requested_version = requested_versions.get(task.id)
             if requested_version is not None and requested_version >= task.version:
                 continue
-            items.append(_serialize_push_item(task, mapping))
-            returned += 1
-            next_cursor = str(task.sync_change_id)
-            max_seen_change_id = max(max_seen_change_id, task.sync_change_id)
-            task.sync_last_pushed_at = _now()
             previous_delivery_status = mapping.last_delivery_status if mapping else None
-            delivery = _get_or_create_delivery(
+            delivery = _create_delivery(
                 db,
+                state=state,
                 bridge_id=payload.bridge_id,
                 task_id=str(task.id),
                 change_id=task.sync_change_id,
@@ -611,6 +748,15 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
                 operation=_mapping_operation(mapping, task),
                 remote_id=mapping.apple_reminder_id if mapping else None,
             )
+            item_payload = _serialize_push_item(task, mapping)
+            item_payload["delivery_id"] = str(delivery.delivery_id)
+            item_payload["delivery_seq"] = delivery.delivery_seq
+            items.append(item_payload)
+            returned += 1
+            next_cursor = str(task.sync_change_id)
+            max_seen_change_id = max(max_seen_change_id, task.sync_change_id)
+            state.last_seen_delivery_seq = max(state.last_seen_delivery_seq or 0, delivery.delivery_seq)
+            task.sync_last_pushed_at = _now()
             if mapping:
                 mapping.pending_operation = _mapping_operation(mapping, task)
                 mapping.last_push_change_id = task.sync_change_id
@@ -707,13 +853,35 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
             )
             continue
 
-        delivery = db.scalar(
-            select(SyncDelivery).where(
-                SyncDelivery.bridge_id == payload.bridge_id,
-                SyncDelivery.task_id == str(item.task_id),
-                SyncDelivery.change_id == ack_change_id,
+        delivery = None
+        if item.delivery_id is not None:
+            delivery = db.scalar(
+                select(SyncDelivery).where(
+                    SyncDelivery.bridge_id == payload.bridge_id,
+                    SyncDelivery.task_id == str(item.task_id),
+                    SyncDelivery.delivery_id == item.delivery_id,
+                )
             )
-        )
+            if delivery is None:
+                raise HTTPException(status_code=409, detail=f"Ack delivery_id not found for task: {item.task_id}")
+        elif item.delivery_seq is not None:
+            delivery = db.scalar(
+                select(SyncDelivery).where(
+                    SyncDelivery.bridge_id == payload.bridge_id,
+                    SyncDelivery.task_id == str(item.task_id),
+                    SyncDelivery.delivery_seq == item.delivery_seq,
+                )
+            )
+            if delivery is None:
+                raise HTTPException(status_code=409, detail=f"Ack delivery_seq not found for task: {item.task_id}")
+        else:
+            delivery = db.scalar(
+                select(SyncDelivery).where(
+                    SyncDelivery.bridge_id == payload.bridge_id,
+                    SyncDelivery.task_id == str(item.task_id),
+                    SyncDelivery.change_id == ack_change_id,
+                )
+            )
         if delivery is None and mapping.last_acked_change_id and ack_change_id < mapping.last_acked_change_id:
             acked.append(
                 {
@@ -751,6 +919,8 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
             raise HTTPException(status_code=409, detail=f"Ack change_id not found for task: {item.task_id}")
         if delivery and item.version != delivery.task_version:
             raise HTTPException(status_code=409, detail=f"Ack version does not match delivered version for task: {item.task_id}")
+        if delivery and item.change_id is not None and delivery.change_id != ack_change_id:
+            raise HTTPException(status_code=409, detail=f"Ack change_id does not match delivered change_id for task: {item.task_id}")
 
         if item.remote_id:
             mapping.apple_reminder_id = item.remote_id
@@ -762,7 +932,7 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
         mapping.last_error_code = item.error_code
         mapping.last_error_message = item.error_message
 
-        effective_change_id = ack_change_id
+        effective_change_id = delivery.change_id if delivery else ack_change_id
         if delivery:
             delivery.remote_id = item.remote_id or delivery.remote_id
             delivery.retryable = item.retryable
@@ -785,6 +955,8 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
             max_acked_change_id = max(max_acked_change_id, effective_change_id)
             state.last_acked_change_id = max(state.last_acked_change_id or 0, effective_change_id)
             if delivery:
+                state.last_acked_delivery_seq = max(state.last_acked_delivery_seq or 0, delivery.delivery_seq)
+                state.last_seen_delivery_seq = max(state.last_seen_delivery_seq or 0, delivery.delivery_seq)
                 delivery.status = "acknowledged"
                 delivery.acked_at = _now()
                 delivery.failed_at = None
@@ -794,6 +966,9 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
             mapping.last_delivery_status = "conflict"
             mapping.last_failed_change_id = effective_change_id
             state.last_failed_change_id = max(state.last_failed_change_id or 0, effective_change_id)
+            if delivery:
+                state.last_failed_delivery_seq = max(state.last_failed_delivery_seq or 0, delivery.delivery_seq)
+                state.last_seen_delivery_seq = max(state.last_seen_delivery_seq or 0, delivery.delivery_seq)
             state.last_error_code = item.error_code or "conflict"
             state.last_error_message = item.error_message or f"conflict on task {item.task_id}"
             if delivery:
@@ -807,6 +982,9 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
             mapping.last_delivery_attempt_count = delivery.attempt_count if delivery else mapping.last_delivery_attempt_count
             mapping.last_failed_change_id = effective_change_id
             state.last_failed_change_id = max(state.last_failed_change_id or 0, effective_change_id)
+            if delivery:
+                state.last_failed_delivery_seq = max(state.last_failed_delivery_seq or 0, delivery.delivery_seq)
+                state.last_seen_delivery_seq = max(state.last_seen_delivery_seq or 0, delivery.delivery_seq)
             state.last_error_code = item.error_code or ("retryable_push_failed" if item.retryable else "push_failed")
             state.last_error_message = item.error_message or f"ack failed on task {item.task_id}"
             if delivery:

@@ -73,6 +73,8 @@ class SyncAppleAckItem(BaseModel):
     task_id: UUID
     remote_id: str | None = None
     version: int
+    delivery_id: UUID | None = None
+    delivery_seq: int | None = Field(default=None, ge=1)
     change_id: int | None = Field(default=None, ge=1)
     status: Literal["success", "failed", "conflict", "acked", "applied"] = "success"
     apple_modified_at: datetime | None = None
@@ -90,6 +92,8 @@ class SyncAppleAckRequest(BaseModel):
 
 class SyncBridgeDeliverySummary(BaseModel):
     task_id: str
+    delivery_id: UUID | None = None
+    delivery_seq: int | None = None
     change_id: int
     task_version: int
     operation: str
@@ -117,6 +121,10 @@ class SyncBridgeStateRead(BaseModel):
     last_acked_change_id: int | None = None
     last_failed_change_id: int | None = None
     last_seen_change_id: int | None = None
+    next_delivery_seq: int | None = None
+    last_acked_delivery_seq: int | None = None
+    last_failed_delivery_seq: int | None = None
+    last_seen_delivery_seq: int | None = None
     pending_delivery_count: int = 0
     last_pull_started_at: datetime | None = None
     last_pull_succeeded_at: datetime | None = None

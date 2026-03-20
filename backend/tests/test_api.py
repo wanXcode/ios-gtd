@@ -397,6 +397,8 @@ def test_sync_push_accepts_create_mutation_without_task_id(test_context: tuple[T
     assert len(payload["accepted"]) == 1
     assert payload["accepted"][0]["task"]["title"] == "Brand new reminder"
     assert payload["accepted"][0]["task"]["source_ref"] == "apple-new-1"
+    assert payload["accepted"][0]["created_from_bridge"] is True
+    assert payload["accepted"][0]["identity_resolution"] == "new_task"
     assert payload["items"] == []
     assert payload["checkpoint"]["last_push_cursor"] == "0"
 
@@ -596,8 +598,72 @@ def test_sync_pull_pairs_feishu_origin_task_by_source_record_id_instead_of_creat
         assert mapping is not None
         assert mapping.apple_reminder_id == "apple-reminder-echo-1"
         refreshed = db.scalar(select(Task).where(Task.id == UUID(task_id)))
+        assert refreshed.source == "chat_ai"
         assert refreshed.source_ref == "msg-feishu-123"
         assert refreshed.last_modified_by == "apple_sync"
+
+
+def test_sync_push_create_without_task_id_pairs_existing_feishu_task_instead_of_creating_duplicate(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, TestingSessionLocal = test_context
+    created = client.post(
+        "/api/tasks",
+        json={
+            "title": "给张三发合同",
+            "last_modified_by": "tester",
+            "source": "feishu_chat",
+            "source_ref": "msg-feishu-bridge-1",
+        },
+    )
+    assert created.status_code == 201
+    task_id = created.json()["id"]
+
+    push = client.post(
+        "/api/sync/apple/push",
+        json={
+            "bridge_id": "bridge-create-pair-existing",
+            "cursor": "0",
+            "limit": 10,
+            "tasks": [
+                {
+                    "task_id": None,
+                    "reminder_id": "apple-reminder-paired-1",
+                    "title": "给张三发合同",
+                    "notes": "from apple bridge replay",
+                    "due_date": None,
+                    "remind_at": None,
+                    "is_all_day_due": False,
+                    "priority": None,
+                    "list_name": "Inbox",
+                    "list_identifier": "inbox",
+                    "external_identifier": "msg-feishu-bridge-1",
+                    "state": "active",
+                    "fingerprint": {"value": "fp-paired-1"},
+                    "last_modified_at": "2026-03-19T11:00:00Z",
+                    "backend_version_token": None,
+                    "backend_change_id": None,
+                }
+            ],
+        },
+    )
+    assert push.status_code == 200, push.text
+    payload = push.json()
+    assert len(payload["accepted"]) == 1
+    assert payload["accepted"][0]["task_id"] == task_id
+    assert payload["accepted"][0]["created_from_bridge"] is False
+    assert payload["accepted"][0]["identity_resolution"] == "source_hint"
+
+    with TestingSessionLocal() as db:
+        tasks = list(db.scalars(select(Task).order_by(Task.created_at.asc())).all())
+        assert len(tasks) == 1
+        refreshed = db.scalar(select(Task).where(Task.id == UUID(task_id)))
+        assert refreshed is not None
+        assert refreshed.source == "feishu_chat"
+        assert refreshed.source_ref == "msg-feishu-bridge-1"
+        mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == UUID(task_id)))
+        assert mapping is not None
+        assert mapping.apple_reminder_id == "apple-reminder-paired-1"
 
 
 def test_capture_api_apply_false_returns_structured_draft(test_context: tuple[TestClient, sessionmaker]) -> None:

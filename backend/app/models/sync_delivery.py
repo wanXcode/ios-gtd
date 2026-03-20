@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -13,8 +14,10 @@ class SyncDelivery(Base):
         UniqueConstraint("bridge_id", "task_id", "change_id", name="uq_sync_delivery_bridge_task_change"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    delivery_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), default=uuid.uuid4, nullable=False, unique=True)
     bridge_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    delivery_seq: Mapped[int] = mapped_column(Integer, nullable=False)
     task_id: Mapped[str] = mapped_column(String(36), nullable=False)
     change_id: Mapped[int] = mapped_column(Integer, nullable=False)
     task_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -30,5 +33,6 @@ class SyncDelivery(Base):
     acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON)
+    superseded_by_delivery_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
