@@ -330,6 +330,7 @@ def parse_capture_input(text: str, *, timezone_name: str = "UTC") -> CaptureDraf
 
 AMBIGUOUS_TIME_KEYWORDS = ("找时间", "有空", "回头", "尽快", "晚点", "周末")
 PROJECT_SCOPE_KEYWORDS = ("项目", "project", "方案", "计划", "里程碑", "拆分", "需求")
+FORCE_CAPTURE_PREFIXES = ("提醒：", "提醒:", "任务：", "任务:", "待办：", "待办:")
 
 
 def _build_follow_up_questions(
@@ -383,6 +384,8 @@ def _detect_intent(text: str) -> AssistantIntent:
     lowered = text.lower().strip()
     if text.startswith(("建项目", "创建项目", "新建项目", "项目：", "项目:")) or lowered.startswith(("project:", "create project ")):
         return "create_project"
+    if text.startswith(FORCE_CAPTURE_PREFIXES):
+        return "create_task"
     if "提醒我" in text or "帮我记" in text or text.startswith(("记得", "待办", "todo:", "todo：", "需要")):
         return "create_task"
     return "capture_inbox"
@@ -390,6 +393,12 @@ def _detect_intent(text: str) -> AssistantIntent:
 
 def _strip_command_prefix(text: str) -> str:
     prefixes = [
+        "提醒：",
+        "提醒:",
+        "任务：",
+        "任务:",
+        "待办：",
+        "待办:",
         "提醒我",
         "帮我记一个任务",
         "帮我记个任务",

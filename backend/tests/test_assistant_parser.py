@@ -21,6 +21,25 @@ def test_parse_tomorrow_task_defaults_to_next_action() -> None:
     assert parsed.confidence >= 0.7
 
 
+def test_parse_force_prefixes_route_directly_to_task_capture() -> None:
+    parsed = parse_capture_input("提醒：明晚8点给张三发合同", timezone_name="UTC")
+
+    assert parsed.intent == "create_task"
+    assert parsed.summary == "给张三发合同"
+    assert parsed.bucket == "next"
+    assert parsed.needs_confirmation is False
+    assert parsed.due_at is not None
+    assert parsed.remind_at is not None
+
+    parsed2 = parse_capture_input("任务：补发发票", timezone_name="UTC")
+    assert parsed2.intent == "create_task"
+    assert parsed2.summary == "补发发票"
+
+    parsed3 = parse_capture_input("待办：整理报销单", timezone_name="UTC")
+    assert parsed3.intent == "create_task"
+    assert parsed3.summary == "整理报销单"
+
+
 def test_parse_tomorrow_evening_specific_time_sets_reminder() -> None:
     parsed = parse_capture_input("明晚8点给妈妈打电话", timezone_name="UTC")
 
