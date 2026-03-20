@@ -165,6 +165,82 @@ def test_pending_delivery_is_replayed_even_when_cursor_has_already_passed_change
 
 
 
+def test_applied_ack_marks_delivery_acknowledged_and_stops_replay(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, TestingSessionLocal = test_context
+    created = client.post("/api/tasks", json={"title": "Applied once", "last_modified_by": "tester"}).json()
+
+    push = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-applied", "cursor": "0", "limit": 10, "tasks": []},
+    )
+    assert push.status_code == 200
+    item = next(entry for entry in push.json()["items"] if entry["task_id"] == created["id"])
+
+    applied_ack = client.post(
+        "/api/sync/apple/ack",
+        json={
+            "bridge_id": "bridge-applied",
+            "acks": [
+                {
+                    "task_id": created["id"],
+                    "remote_id": "apple-applied-1",
+                    "version": item["version"],
+                    "change_id": item["change_id"],
+                    "status": "applied",
+                }
+            ],
+        },
+    )
+    assert applied_ack.status_code == 200, applied_ack.text
+    payload = applied_ack.json()
+    assert payload["success"] == 1
+    assert payload["checkpoint"]["last_acked_change_id"] == item["change_id"]
+    assert all(
+        not (
+            entry["task_id"] == created["id"]
+            and entry["change_id"] == item["change_id"]
+            and entry["status"] == "pending"
+        )
+        for entry in payload["checkpoint"]["recent_deliveries"]
+    )
+
+    replay = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-applied", "cursor": str(item["change_id"]), "limit": 10, "tasks": []},
+    )
+    assert replay.status_code == 200, replay.text
+    replay_payload = replay.json()
+    assert all(
+        not (
+            entry["task_id"] == created["id"]
+            and entry["change_id"] == item["change_id"]
+        )
+        for entry in replay_payload["items"]
+    )
+
+    with TestingSessionLocal() as db:
+        task = db.scalar(select(Task).where(Task.id == UUID(created["id"])))
+        mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == UUID(created["id"])))
+        delivery = db.scalar(
+            select(SyncDelivery).where(
+                SyncDelivery.bridge_id == "bridge-applied",
+                SyncDelivery.task_id == created["id"],
+                SyncDelivery.change_id == item["change_id"],
+            )
+        )
+        state = db.scalar(select(SyncBridgeState).where(SyncBridgeState.bridge_id == "bridge-applied"))
+        assert task.sync_pending is False
+        assert mapping.last_acked_change_id == item["change_id"]
+        assert mapping.last_delivery_status == "acknowledged"
+        assert delivery is not None
+        assert delivery.status == "acknowledged"
+        assert delivery.acked_at is not None
+        assert state.last_acked_change_id == item["change_id"]
+
+
+
 def test_stale_ack_by_change_id_is_ignored_after_success(
     test_context: tuple[TestClient, sessionmaker],
 ) -> None:

@@ -74,7 +74,7 @@ class SyncAppleAckItem(BaseModel):
     remote_id: str | None = None
     version: int
     change_id: int | None = Field(default=None, ge=1)
-    status: Literal["success", "failed", "conflict", "acked"] = "success"
+    status: Literal["success", "failed", "conflict", "acked", "applied"] = "success"
     apple_modified_at: datetime | None = None
     apple_list_id: str | None = None
     apple_calendar_id: str | None = None

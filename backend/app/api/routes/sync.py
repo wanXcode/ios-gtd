@@ -758,7 +758,7 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
             delivery.last_error_code = item.error_code
             delivery.last_error_message = item.error_message
 
-        if item.status in {"success", "acked"}:
+        if item.status in {"success", "acked", "applied"}:
             success += 1
             task.sync_pending = False
             task.sync_last_pushed_at = _now()
