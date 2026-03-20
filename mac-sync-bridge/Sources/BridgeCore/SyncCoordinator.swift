@@ -236,9 +236,8 @@ public actor SyncCoordinator {
     ) async throws -> [ReminderRecord] {
         guard !items.isEmpty else { return existingReminders }
 
-        let reminderPairs: [(String, ReminderRecord)] = existingReminders.compactMap { reminder in
-            guard let key = reminder.externalIdentifier else { return nil }
-            return (key, reminder)
+        let reminderPairs: [(String, ReminderRecord)] = existingReminders.map { reminder in
+            (reminder.externalIdentifier, reminder)
         }
         let reminderByTaskID: [String: ReminderRecord] = Dictionary(uniqueKeysWithValues: reminderPairs)
 
