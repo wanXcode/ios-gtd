@@ -149,7 +149,7 @@ def _pending_delivery_statuses() -> tuple[str, ...]:
 
 
 def _replayable_delivery_statuses() -> tuple[str, ...]:
-    return ("retryable_failed", "failed", "conflict")
+    return ("pending", "retryable_failed", "failed", "conflict")
 
 
 def _serialize_bridge_state(state: SyncBridgeState, db: Session) -> SyncBridgeStateRead:
@@ -514,6 +514,12 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
         if not task:
             continue
         mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == task.id))
+        if (
+            mapping
+            and mapping.last_ack_status in {"success", "acked"}
+            and mapping.last_acked_change_id == delivery.change_id
+        ):
+            continue
         requested_version = requested_versions.get(task.id)
         if requested_version is not None and requested_version >= task.version:
             continue
@@ -546,12 +552,12 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
         for task, mapping in rows:
             if (str(task.id), task.sync_change_id) in replayed_keys:
                 continue
+            if mapping and mapping.last_ack_status in {"success", "acked"} and mapping.last_acked_change_id == task.sync_change_id:
+                continue
             if payload.cursor is not None and str(task.sync_change_id) <= payload.cursor:
                 continue
             requested_version = requested_versions.get(task.id)
             if requested_version is not None and requested_version >= task.version:
-                continue
-            if mapping and mapping.last_ack_status in {"success", "acked"} and mapping.last_acked_change_id == task.sync_change_id:
                 continue
             items.append(_serialize_push_item(task, mapping))
             returned += 1

@@ -258,7 +258,7 @@ def test_sync_pull_delete_marks_task_deleted(test_context: tuple[TestClient, ses
 
 
 def test_sync_ack_stale_version_is_ignored_and_push_cursor_filters_duplicates(test_context: tuple[TestClient, sessionmaker]) -> None:
-    client, TestingSessionLocal = test_context
+    client, _ = test_context
     created = client.post("/api/tasks", json={"title": "Dedup me", "last_modified_by": "tester"}).json()
     task_id = created["id"]
 
@@ -325,7 +325,39 @@ def test_sync_ack_stale_version_is_ignored_and_push_cursor_filters_duplicates(te
         json={"bridge_id": "bridge-dedup", "cursor": str(next_change_id), "limit": 10, "tasks": []},
     )
     assert filtered_push.status_code == 200
-    assert all(entry["task_id"] != task_id for entry in filtered_push.json()["items"])
+    filtered_items = [entry for entry in filtered_push.json()["items"] if entry["task_id"] == task_id]
+    assert filtered_items
+    assert all(entry["change_id"] == next_change_id for entry in filtered_items)
+
+    ack_latest = client.post(
+        "/api/sync/apple/ack",
+        json={
+            "bridge_id": "bridge-dedup",
+            "acks": [
+                {
+                    "task_id": task_id,
+                    "remote_id": "apple-dedup-1",
+                    "version": updated.json()["version"],
+                    "change_id": next_change_id,
+                    "status": "success",
+                    "apple_modified_at": "2026-03-19T07:02:00Z",
+                }
+            ],
+        },
+    )
+    assert ack_latest.status_code == 200
+
+    state = client.get("/api/sync/apple/state/bridge-dedup")
+    assert state.status_code == 200
+    state_payload = state.json()
+    assert all(
+        not (
+            entry["task_id"] == task_id
+            and entry["change_id"] == next_change_id
+            and entry["status"] == "pending"
+        )
+        for entry in state_payload["recent_deliveries"]
+    )
 
 
 def test_sync_push_accepts_create_mutation_without_task_id(test_context: tuple[TestClient, sessionmaker]) -> None:
