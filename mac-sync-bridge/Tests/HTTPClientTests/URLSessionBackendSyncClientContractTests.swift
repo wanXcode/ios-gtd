@@ -163,6 +163,30 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
         XCTAssertEqual(response.items.first?.task.dueDate?.timeIntervalSince1970, 1_774_912_400, accuracy: 0.001)
     }
 
+    func testPushChangesDecodesLiveServerEnvelopeFixture() async throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("fixtures_push_live.json")
+        let fixtureData = try Data(contentsOf: fixtureURL)
+        let session = StubURLSession(response: .http(statusCode: 200), data: fixtureData)
+        let client = makeClient(session: session)
+
+        let response = try await client.pushChanges(
+            request: PushChangesRequest(
+                bridgeID: "fh-macbook-air",
+                cursor: nil,
+                tasks: [],
+                limit: 100
+            )
+        )
+
+        XCTAssertEqual(response.items.count, 1)
+        XCTAssertEqual(response.items.first?.taskID, "da48a082-207b-4103-a2d2-7cb5b656babe")
+        XCTAssertEqual(response.items.first?.changeID, 1)
+        XCTAssertEqual(response.items.first?.task.title, "明晚8点提醒我给张三发合同")
+        XCTAssertEqual(response.nextCursor, "1")
+    }
+
     func testPushChangesMatchesAcceptedItemToThirdRequestByReminderSourceRef() async throws {
         let session = StubURLSession(response: .http(statusCode: 200), data: pushFixturePartialAccepted.data(using: .utf8)!)
         let client = makeClient(session: session)

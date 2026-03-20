@@ -164,8 +164,8 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
             body: request,
             responseType: APIPushResponse.self
         )
-        let acceptedItems = (response.accepted ?? response.items ?? []).map(\.remoteEnvelope)
-        let items = (response.items ?? []).map(\.remoteEnvelope)
+        let acceptedItems = (response.accepted ?? response.items ?? []).compactMap(\.remoteEnvelope)
+        let items = (response.items ?? []).compactMap(\.remoteEnvelope)
         let accepted: [PushTaskResult] = matchAcceptedResults(requestTasks: request.tasks, acceptedItems: acceptedItems)
         return PushChangesResponse(
             accepted: accepted,
@@ -342,18 +342,20 @@ private struct APIPushResponse: Decodable {
 
 private struct APIPushItem: Decodable {
     let taskId: String
-    let version: Int
+    let version: Int?
     let changeId: Int?
-    let operation: String
-    let task: APIEmbeddedTask
+    let operation: String?
+    let task: APIEmbeddedTask?
 
-    var remoteEnvelope: RemoteTaskEnvelope {
-        RemoteTaskEnvelope(
+    var remoteEnvelope: RemoteTaskEnvelope? {
+        guard let task else { return nil }
+        let resolvedVersion = version ?? task.version ?? 0
+        return RemoteTaskEnvelope(
             taskID: taskId,
-            version: version,
-            changeID: changeId,
-            operation: operation,
-            task: task.backendTaskRecord(taskID: taskId, fallbackVersion: version, fallbackChangeID: changeId)
+            version: resolvedVersion,
+            changeID: changeId ?? task.changeId,
+            operation: operation ?? "upsert",
+            task: task.backendTaskRecord(taskID: taskId, fallbackVersion: resolvedVersion, fallbackChangeID: changeId ?? task.changeId)
         )
     }
 }
