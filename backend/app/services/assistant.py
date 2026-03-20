@@ -111,6 +111,8 @@ class AssistantService:
             source=source,
             source_ref=source_ref,
             last_modified_by=actor,
+            sync_change_id=1,
+            sync_pending=True,
         )
         self.db.add(task)
         self.db.flush()

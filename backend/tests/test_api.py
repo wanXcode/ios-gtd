@@ -572,3 +572,29 @@ def test_capture_api_apply_true_does_not_persist_when_confirmation_is_required(
         assert tasks == []
         logs = list(db.scalars(select(OperationLog).where(OperationLog.operation_type == "assistant_capture")).all())
         assert logs == []
+
+
+def test_capture_api_apply_true_marks_created_task_as_sync_pending(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, TestingSessionLocal = test_context
+
+    response = client.post(
+        "/api/assistant/capture",
+        json={
+            "input": "明晚8点提醒我给张三发合同",
+            "context": {"timezone": "Asia/Shanghai", "actor": "tester", "source": "chat_ai", "source_ref": "msg-2"},
+            "apply": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["created"] is not None
+    task_id = payload["created"]["task_id"]
+
+    with TestingSessionLocal() as db:
+        task = db.scalar(select(Task).where(Task.id == UUID(task_id)))
+        assert task is not None
+        assert task.sync_pending is True
+        assert task.sync_change_id == 1
