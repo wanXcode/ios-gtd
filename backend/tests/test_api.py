@@ -544,3 +544,31 @@ def test_capture_api_returns_questions_for_ambiguous_time(test_context: tuple[Te
     assert payload["draft"]["error_code"] == "needs_confirmation"
     assert payload["questions"] == payload["draft"]["questions"]
     assert payload["error_code"] == payload["draft"]["error_code"]
+
+
+def test_capture_api_apply_true_does_not_persist_when_confirmation_is_required(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, TestingSessionLocal = test_context
+
+    response = client.post(
+        "/api/assistant/capture",
+        json={
+            "input": "晚点提醒我看下邮箱",
+            "context": {"timezone": "UTC", "actor": "tester", "source": "chat_ai", "source_ref": "msg-1"},
+            "apply": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["applied"] is True
+    assert payload["created"] is None
+    assert payload["draft"]["needs_confirmation"] is True
+    assert payload["draft"]["error_code"] == "needs_confirmation"
+
+    with TestingSessionLocal() as db:
+        tasks = list(db.scalars(select(Task)).all())
+        assert tasks == []
+        logs = list(db.scalars(select(OperationLog).where(OperationLog.operation_type == "assistant_capture")).all())
+        assert logs == []

@@ -52,7 +52,7 @@ class AssistantService:
         apply: bool = False,
     ) -> tuple[CaptureDraft, Task | Project | None]:
         draft = parse_capture_input(text, timezone_name=timezone_name)
-        if not apply:
+        if not apply or draft.needs_confirmation:
             return draft, None
 
         created = self._apply_draft(

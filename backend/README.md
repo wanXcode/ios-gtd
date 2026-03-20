@@ -124,6 +124,7 @@ These routes are meant for AI / chat orchestration so the model does not have to
 - `POST /api/assistant/capture`
   - turns natural language into a structured capture draft or persisted task/project
   - supports `apply=false` for parse-only behavior, `apply=true` for write-through creation
+  - if `draft.needs_confirmation=true`, backend now refuses to persist and returns `created=null`
   - current parser is intentionally heuristic and conservative
   - response currently includes `draft / applied / created / questions / error_code`
   - bucket policy now follows the confirmed GTD baseline:
