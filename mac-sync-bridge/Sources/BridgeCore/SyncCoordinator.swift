@@ -73,13 +73,14 @@ public actor SyncCoordinator {
             )
         }
 
-        try await persistPushResults(pushResponse.accepted, reminders: reminders)
+        let remindersAfterPush = try await applyRemotePushItems(pushResponse.items, existingReminders: reminders)
+        try await persistPushResults(pushResponse.accepted, reminders: remindersAfterPush)
 
         let ackItems = buildAckItems(
-            taskIDs: Array(Set(plan.ackTaskIDs + pushResponse.accepted.map(\.task.id))),
+            taskIDs: Array(Set(plan.ackTaskIDs + pushResponse.accepted.map(\.task.id) + pushResponse.items.map(\.taskID))),
             acceptedPushes: pushResponse.accepted,
             remoteItems: pushResponse.items,
-            reminders: reminders
+            reminders: remindersAfterPush
         )
         if !ackItems.isEmpty {
             try await dependencies.backendClient.ackChanges(
@@ -227,6 +228,46 @@ public actor SyncCoordinator {
         if !mappings.isEmpty {
             try await dependencies.bridgeStore.saveMappings(mappings)
         }
+    }
+
+    private func applyRemotePushItems(
+        _ items: [RemoteTaskEnvelope],
+        existingReminders: [ReminderRecord]
+    ) async throws -> [ReminderRecord] {
+        guard !items.isEmpty else { return existingReminders }
+
+        let reminderByTaskID = Dictionary(uniqueKeysWithValues: existingReminders.map { ($0.externalIdentifier, $0) }.compactMap { key, value in
+            guard let key else { return nil }
+            return (key, value)
+        })
+
+        let upserts: [ReminderRecord] = items.compactMap { item in
+            let existingReminder = reminderByTaskID[item.taskID]
+            let reminderID = existingReminder?.id ?? UUID().uuidString
+            let externalIdentifier = existingReminder?.externalIdentifier ?? item.taskID
+            return ReminderRecord(
+                id: reminderID,
+                externalIdentifier: externalIdentifier,
+                title: item.task.title,
+                notes: item.task.notes,
+                dueDate: item.task.dueDate,
+                isCompleted: item.task.state == .completed,
+                isDeleted: item.task.state == .deleted,
+                listIdentifier: existingReminder?.listIdentifier,
+                lastModifiedAt: item.task.updatedAt,
+                fingerprint: ReminderFingerprint(value: item.task.versionToken)
+            )
+        }
+
+        if !upserts.isEmpty {
+            try await dependencies.reminderStore.upsert(reminders: upserts)
+        }
+
+        var merged = Dictionary(uniqueKeysWithValues: existingReminders.map { ($0.id, $0) })
+        for reminder in upserts {
+            merged[reminder.id] = reminder
+        }
+        return Array(merged.values)
     }
 
     private func queueRejectedMutations(_ rejectedReminderIDs: [String], from mutations: [PushTaskMutation]) async throws -> Int {
