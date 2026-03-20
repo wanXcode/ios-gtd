@@ -456,6 +456,11 @@ def _extract_temporal_info(raw: str, *, tz: ZoneInfo, now: datetime) -> dict:
     remind_at: datetime | None = None
     time_expression: str | None = None
 
+    has_morning = any(token in text for token in ("上午", "早上", "清晨"))
+    has_noon = any(token in text for token in ("中午",))
+    has_afternoon = any(token in text for token in ("下午", "傍晚", "晚些时候"))
+    has_evening = any(token in text for token in ("晚上", "今晚", "明晚", "夜里", "夜间"))
+
     time_match = re.search(r"(?<!\d)(\d{1,2})(?:[:点时](\d{1,2}))?(?:点|时)?\s*(半)?", text)
     hour: int | None = None
     minute: int | None = None
@@ -464,38 +469,46 @@ def _extract_temporal_info(raw: str, *, tz: ZoneInfo, now: datetime) -> dict:
         minute = int(time_match.group(2) or 0)
         if time_match.group(3):
             minute = 30
+        if has_morning and hour == 12:
+            hour = 0
+        elif has_noon and 1 <= hour <= 10:
+            hour += 12
+        elif has_afternoon and 1 <= hour < 12:
+            hour += 12
+        elif has_evening and 1 <= hour < 12:
+            hour += 12
         explicit_time = True
 
     if "明晚" in text:
         time_expression = "明晚"
         target_date = now.date() + timedelta(days=1)
-        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=20), tz)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=20, preserve_explicit_hour=explicit_time), tz)
         remind_at = due_at - timedelta(hours=2)
         text = text.replace("明晚", "", 1)
     elif "今晚" in text:
         time_expression = "今晚"
         target_date = now.date()
-        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=20), tz)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=20, preserve_explicit_hour=explicit_time), tz)
         remind_at = due_at - timedelta(hours=2)
         text = text.replace("今晚", "", 1)
     elif "明天" in text:
         time_expression = "明天"
         target_date = now.date() + timedelta(days=1)
-        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18), tz)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18, preserve_explicit_hour=explicit_time), tz)
         if explicit_time:
             remind_at = due_at - timedelta(hours=1)
         text = text.replace("明天", "", 1)
     elif "后天" in text:
         time_expression = "后天"
         target_date = now.date() + timedelta(days=2)
-        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18), tz)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18, preserve_explicit_hour=explicit_time), tz)
         if explicit_time:
             remind_at = due_at - timedelta(hours=1)
         text = text.replace("后天", "", 1)
     elif "今天" in text:
         time_expression = "今天"
         target_date = now.date()
-        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18), tz)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18, preserve_explicit_hour=explicit_time), tz)
         if explicit_time:
             remind_at = due_at - timedelta(hours=1)
         text = text.replace("今天", "", 1)
@@ -505,7 +518,7 @@ def _extract_temporal_info(raw: str, *, tz: ZoneInfo, now: datetime) -> dict:
         if days_until_next_monday <= 0:
             days_until_next_monday += 7
         target_date = now.date() + timedelta(days=days_until_next_monday)
-        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18), tz)
+        due_at = _combine_date_time(target_date, _normalize_clock(hour, minute, fallback_hour=18, preserve_explicit_hour=explicit_time), tz)
         if explicit_time:
             remind_at = due_at - timedelta(days=1)
         text = text.replace("下周前", "", 1).replace("下周", "", 1)
@@ -526,18 +539,42 @@ def _extract_temporal_info(raw: str, *, tz: ZoneInfo, now: datetime) -> dict:
 
 def _cleanup_summary(text: str) -> str:
     value = text
-    for token in ["以后再说", "晚点再说", "回头再说", "有空再说", "前", "截止", "一下"]:
+    for token in [
+        "以后再说",
+        "晚点再说",
+        "回头再说",
+        "有空再说",
+        "上午",
+        "早上",
+        "清晨",
+        "中午",
+        "下午",
+        "傍晚",
+        "晚上",
+        "夜里",
+        "夜间",
+        "提醒我",
+        "前",
+        "截止",
+        "一下",
+    ]:
         value = value.replace(token, " ")
     value = re.sub(r"\s+", " ", value)
     value = value.strip(" ，,。；;：:!?！？")
     return value.strip() or "Untitled task"
 
 
-def _normalize_clock(hour: int | None, minute: int | None, *, fallback_hour: int) -> tuple[int, int]:
+def _normalize_clock(
+    hour: int | None,
+    minute: int | None,
+    *,
+    fallback_hour: int,
+    preserve_explicit_hour: bool = False,
+) -> tuple[int, int]:
     if hour is None:
         return fallback_hour, 0
     normalized_hour = hour
-    if fallback_hour >= 18 and 1 <= hour < 12:
+    if not preserve_explicit_hour and fallback_hour >= 18 and 1 <= hour < 12:
         normalized_hour = hour + 12
     return max(0, min(normalized_hour, 23)), max(0, min(minute or 0, 59))
 

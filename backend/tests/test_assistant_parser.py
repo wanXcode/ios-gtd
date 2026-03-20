@@ -1,3 +1,5 @@
+from zoneinfo import ZoneInfo
+
 from app.services.assistant import parse_capture_input
 from app.services.bucket_policy import (
     apple_reminders_list_to_bucket,
@@ -28,6 +30,29 @@ def test_parse_tomorrow_evening_specific_time_sets_reminder() -> None:
     assert parsed.remind_at is not None
     assert parsed.due_at.hour == 20
     assert parsed.remind_at == parsed.due_at.replace(hour=18)
+    assert parsed.needs_confirmation is False
+
+
+def test_parse_tomorrow_morning_specific_time_keeps_morning_hour() -> None:
+    parsed = parse_capture_input("明天上午9点提醒我给王总发周报", timezone_name="Asia/Shanghai")
+
+    assert parsed.summary == "给王总发周报"
+    assert parsed.time_expression == "明天"
+    assert parsed.due_at is not None
+    assert parsed.remind_at is not None
+    assert parsed.due_at.astimezone(ZoneInfo("Asia/Shanghai")).hour == 9
+    assert parsed.remind_at.astimezone(ZoneInfo("Asia/Shanghai")).hour == 8
+    assert parsed.needs_confirmation is False
+
+
+def test_parse_tomorrow_afternoon_specific_time_normalizes_pm_hour() -> None:
+    parsed = parse_capture_input("明天下午3点给客户回电话", timezone_name="Asia/Shanghai")
+
+    assert parsed.summary == "给客户回电话"
+    assert parsed.due_at is not None
+    assert parsed.remind_at is not None
+    assert parsed.due_at.astimezone(ZoneInfo("Asia/Shanghai")).hour == 15
+    assert parsed.remind_at.astimezone(ZoneInfo("Asia/Shanghai")).hour == 14
     assert parsed.needs_confirmation is False
 
 
