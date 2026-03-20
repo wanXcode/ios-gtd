@@ -158,20 +158,41 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
     }
 
     public func pushChanges(request: PushChangesRequest) async throws -> PushChangesResponse {
-        let response: APIPushResponse = try await sendJSON(
-            method: "POST",
-            path: endpoints.pushPath,
-            body: request,
-            responseType: APIPushResponse.self
-        )
-        let acceptedItems = (response.accepted ?? response.items ?? []).compactMap(\.remoteEnvelope)
-        let items = (response.items ?? []).compactMap(\.remoteEnvelope)
+        var httpRequest = try buildRequest(method: "POST", path: endpoints.pushPath)
+        do {
+            httpRequest.httpBody = try configuration.jsonEncoder.encode(request)
+        } catch {
+            throw BackendClientError.encodingFailed(String(describing: error))
+        }
+        httpRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        httpRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        if let requestBody = httpRequest.httpBody, let requestJSON = String(data: requestBody, encoding: .utf8) {
+            print("[BackendSyncClient.pushChanges] request=\(requestJSON)")
+        }
+
+        let (data, response) = try await session.data(for: httpRequest)
+        if let rawBody = String(data: data, encoding: .utf8) {
+            print("[BackendSyncClient.pushChanges] raw_response=\(rawBody)")
+        }
+
+        let decoded: APIPushResponse
+        do {
+            decoded = try decodeResponse(data: data, response: response, responseType: APIPushResponse.self)
+        } catch {
+            print("[BackendSyncClient.pushChanges] decode_error=\(String(describing: error))")
+            throw error
+        }
+
+        let acceptedItems = (decoded.accepted ?? decoded.items ?? []).compactMap(\.remoteEnvelope)
+        let items = (decoded.items ?? []).compactMap(\.remoteEnvelope)
+        print("[BackendSyncClient.pushChanges] decoded_items=\(items.count) decoded_accepted=\(acceptedItems.count)")
         let accepted: [PushTaskResult] = matchAcceptedResults(requestTasks: request.tasks, acceptedItems: acceptedItems)
         return PushChangesResponse(
             accepted: accepted,
-            rejectedReminderIDs: response.rejectedReminderIDs,
+            rejectedReminderIDs: decoded.rejectedReminderIDs,
             items: items,
-            nextCursor: response.checkpoint.lastPushCursor,
+            nextCursor: decoded.checkpoint.lastPushCursor,
             hasMore: false
         )
     }
