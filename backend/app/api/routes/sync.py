@@ -212,10 +212,47 @@ def _serialize_bridge_state(state: SyncBridgeState, db: Session) -> SyncBridgeSt
 
 
 def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str, str, Task | None]:
+    source_candidates = [
+        candidate
+        for candidate in (
+            change.source_record_id,
+            change.external_identifier,
+            change.apple_reminder_id,
+        )
+        if candidate
+    ]
+
     mapping = db.scalar(
         select(AppleReminderMapping).where(AppleReminderMapping.apple_reminder_id == change.apple_reminder_id)
     )
     task = db.scalar(select(Task).where(Task.id == mapping.task_id)) if mapping else None
+
+    if not task and source_candidates:
+        paired_task = db.scalar(
+            select(Task)
+            .where(Task.source_ref.in_(source_candidates))
+            .order_by(Task.updated_at.desc(), Task.created_at.desc())
+        )
+        if paired_task is not None:
+            task = paired_task
+            if mapping is None:
+                mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == task.id))
+            if mapping is None:
+                mapping = AppleReminderMapping(
+                    task_id=task.id,
+                    apple_reminder_id=change.apple_reminder_id,
+                    apple_list_id=change.apple_list_id,
+                    apple_calendar_id=change.apple_calendar_id,
+                    last_synced_task_version=task.version,
+                    last_seen_apple_modified_at=_normalize_dt(change.apple_modified_at),
+                    sync_state=SyncState.ACTIVE.value,
+                    pending_operation=None,
+                    bridge_updated_at=_now(),
+                    last_ack_status="paired",
+                    last_delivery_status="acknowledged",
+                )
+                db.add(mapping)
+                db.flush()
 
     if mapping and task:
         remote_modified_at = _normalize_dt(change.apple_modified_at)
@@ -269,7 +306,7 @@ def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str,
             remind_at=_normalize_dt(change.payload.remind_at),
             completed_at=_normalize_dt(change.apple_modified_at) if change.payload.is_completed else None,
             source="apple_sync",
-            source_ref=change.apple_reminder_id,
+            source_ref=change.source_record_id or change.external_identifier or change.apple_reminder_id,
             last_modified_by="apple_sync",
             is_all_day_due=change.payload.is_all_day_due,
             sync_pending=False,
@@ -299,7 +336,7 @@ def _apply_remote_upsert(db: Session, change: SyncApplePullChange) -> tuple[str,
     task.remind_at = _normalize_dt(change.payload.remind_at)
     task.is_all_day_due = change.payload.is_all_day_due
     task.source = "apple_sync"
-    task.source_ref = change.apple_reminder_id
+    task.source_ref = change.source_record_id or change.external_identifier or change.apple_reminder_id
     task.last_modified_by = "apple_sync"
     task.deleted_at = None
     task.sync_pending = False

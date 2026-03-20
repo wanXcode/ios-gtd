@@ -516,6 +516,90 @@ def test_sync_bridge_state_endpoint_returns_checkpoint_snapshot(test_context: tu
     assert payload["recent_deliveries"] == []
 
 
+def test_sync_pull_pairs_feishu_origin_task_by_source_record_id_instead_of_creating_duplicate(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, TestingSessionLocal = test_context
+    created = client.post(
+        "/api/tasks",
+        json={
+            "title": "明晚8点提醒我给张三发合同",
+            "last_modified_by": "tester",
+            "source": "chat_ai",
+            "source_ref": "msg-feishu-123",
+        },
+    )
+    assert created.status_code == 201
+    task_id = created.json()["id"]
+
+    ack = client.post(
+        "/api/sync/apple/ack",
+        json={
+            "bridge_id": "bridge-echo-pairing",
+            "acks": [
+                {
+                    "task_id": task_id,
+                    "remote_id": "apple-reminder-echo-1",
+                    "version": created.json()["version"],
+                    "change_id": created.json()["sync_change_id"],
+                    "status": "success",
+                    "apple_modified_at": "2026-03-19T10:00:00Z",
+                    "apple_list_id": "list-inbox",
+                    "apple_calendar_id": "cal-inbox",
+                }
+            ],
+        },
+    )
+    assert ack.status_code == 200
+
+    pulled = client.post(
+        "/api/sync/apple/pull",
+        json={
+            "bridge_id": "bridge-echo-pairing",
+            "cursor": "c-echo-1",
+            "limit": 10,
+            "changes": [
+                {
+                    "change_type": "upsert",
+                    "apple_reminder_id": "apple-reminder-echo-1",
+                    "source_record_id": "msg-feishu-123",
+                    "external_identifier": "msg-feishu-123",
+                    "apple_list_id": "list-inbox",
+                    "apple_calendar_id": "cal-inbox",
+                    "apple_modified_at": "2026-03-19T10:00:03Z",
+                    "payload": {
+                        "title": "明晚8点提醒我给张三发合同",
+                        "note": None,
+                        "is_completed": False,
+                        "due_at": None,
+                        "remind_at": None,
+                        "is_all_day_due": False,
+                        "priority": None,
+                        "list_name": "Inbox",
+                    },
+                }
+            ],
+        },
+    )
+    assert pulled.status_code == 200, pulled.text
+    payload = pulled.json()
+    assert payload["accepted"] == 1
+    assert payload["applied"] == 1
+    assert payload["results"][0]["task_id"] == task_id
+    assert payload["results"][0]["reason"] in {"updated", "created"}
+
+    with TestingSessionLocal() as db:
+        tasks = list(db.scalars(select(Task).order_by(Task.created_at.asc())).all())
+        assert len(tasks) == 1
+        assert str(tasks[0].id) == task_id
+        mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == UUID(task_id)))
+        assert mapping is not None
+        assert mapping.apple_reminder_id == "apple-reminder-echo-1"
+        refreshed = db.scalar(select(Task).where(Task.id == UUID(task_id)))
+        assert refreshed.source_ref == "msg-feishu-123"
+        assert refreshed.last_modified_by == "apple_sync"
+
+
 def test_capture_api_apply_false_returns_structured_draft(test_context: tuple[TestClient, sessionmaker]) -> None:
     client, _ = test_context
 

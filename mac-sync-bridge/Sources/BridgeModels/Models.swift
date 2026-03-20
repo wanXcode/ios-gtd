@@ -468,6 +468,8 @@ public struct ApplePullChange: Codable, Hashable, Sendable {
     public var appleListID: String?
     public var appleCalendarID: String?
     public var appleModifiedAt: Date?
+    public var sourceRecordID: String?
+    public var externalIdentifier: String?
     public var payload: ApplePullChangePayload?
 
     public init(
@@ -476,6 +478,8 @@ public struct ApplePullChange: Codable, Hashable, Sendable {
         appleListID: String? = nil,
         appleCalendarID: String? = nil,
         appleModifiedAt: Date? = nil,
+        sourceRecordID: String? = nil,
+        externalIdentifier: String? = nil,
         payload: ApplePullChangePayload? = nil
     ) {
         self.changeType = changeType
@@ -483,6 +487,8 @@ public struct ApplePullChange: Codable, Hashable, Sendable {
         self.appleListID = appleListID
         self.appleCalendarID = appleCalendarID
         self.appleModifiedAt = appleModifiedAt
+        self.sourceRecordID = sourceRecordID
+        self.externalIdentifier = externalIdentifier
         self.payload = payload
     }
 }

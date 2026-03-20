@@ -31,6 +31,8 @@ class SyncApplePullChange(BaseModel):
     apple_list_id: str | None = None
     apple_calendar_id: str | None = None
     apple_modified_at: datetime | None = None
+    source_record_id: str | None = None
+    external_identifier: str | None = None
     payload: SyncApplePullChangePayload | None = None
 
 
