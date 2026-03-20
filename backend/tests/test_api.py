@@ -591,6 +591,10 @@ def test_capture_api_apply_true_marks_created_task_as_sync_pending(
     assert response.status_code == 200
     payload = response.json()
     assert payload["created"] is not None
+    assert payload["draft"]["intent"] == "create_task"
+    assert payload["draft"]["summary"] == "给张三发合同"
+    assert payload["draft"]["bucket"] == "next"
+    assert payload["draft"]["needs_confirmation"] is False
     task_id = payload["created"]["task_id"]
 
     with TestingSessionLocal() as db:
@@ -598,3 +602,35 @@ def test_capture_api_apply_true_marks_created_task_as_sync_pending(
         assert task is not None
         assert task.sync_pending is True
         assert task.sync_change_id == 1
+        assert task.title == "给张三发合同"
+        assert task.bucket == "next"
+        assert task.source == "chat_ai"
+        assert task.source_ref == "msg-2"
+
+
+def test_capture_api_accepts_legacy_text_and_dry_run_contract(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, TestingSessionLocal = test_context
+
+    response = client.post(
+        "/api/assistant/capture",
+        json={
+            "text": "明晚8点提醒我给张三发合同",
+            "context": {"timezone": "Asia/Shanghai", "actor": "tester", "source": "chat_ai", "source_ref": "legacy-msg"},
+            "dry_run": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["applied"] is False
+    assert payload["created"] is None
+    assert payload["draft"]["intent"] == "create_task"
+    assert payload["draft"]["summary"] == "给张三发合同"
+    assert payload["draft"]["bucket"] == "next"
+    assert payload["draft"]["needs_confirmation"] is False
+
+    with TestingSessionLocal() as db:
+        tasks = list(db.scalars(select(Task)).all())
+        assert tasks == []
