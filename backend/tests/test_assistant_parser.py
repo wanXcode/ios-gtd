@@ -77,16 +77,6 @@ def test_bucket_policy_supports_aliases_and_exact_apple_list_names() -> None:
     assert apple_reminders_list_to_bucket("可能的事 @Maybe") == "someday"
 
 
-def test_bucket_policy_supports_aliases_and_exact_apple_list_names() -> None:
-    assert canonicalize_bucket("next_action") == "next"
-    assert canonicalize_bucket("waiting_for") == "waiting"
-    assert canonicalize_bucket("maybe") == "someday"
-    assert bucket_to_apple_reminders_list("inbox") == "收集箱 @Inbox"
-    assert bucket_to_apple_reminders_list("next_action") == "下一步行动@NextAction"
-    assert apple_reminders_list_to_bucket("等待@Waiting For") == "waiting"
-    assert apple_reminders_list_to_bucket("可能的事 @Maybe") == "someday"
-
-
 def test_parse_empty_text_returns_low_confidence_draft() -> None:
     parsed = parse_capture_input("   ", timezone_name="UTC")
 

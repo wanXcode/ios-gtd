@@ -122,9 +122,10 @@ This keeps sync/history safer for test deployments.
 These routes are meant for AI / chat orchestration so the model does not have to reconstruct common GTD behaviors from raw CRUD every time.
 
 - `POST /api/assistant/capture`
-  - turns natural language into a minimal task capture
-  - supports `dry_run=true` for parse-only behavior
+  - turns natural language into a structured capture draft or persisted task/project
+  - supports `apply=false` for parse-only behavior, `apply=true` for write-through creation
   - current parser is intentionally heuristic and conservative
+  - response currently includes `draft / applied / created / questions / error_code`
   - bucket policy now follows the confirmed GTD baseline:
     - uncertain -> `inbox`
     - explicit action + explicit time -> `next` (internal canonical bucket; Apple list maps to `下一步行动@NextAction`)
@@ -152,7 +153,7 @@ Example capture request:
     "source_ref": "msg_123",
     "actor": "chat"
   },
-  "dry_run": false
+  "apply": false
 }
 ```
 
