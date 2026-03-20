@@ -164,8 +164,8 @@ public final class URLSessionBackendSyncClient: BackendSyncClient, @unchecked Se
             body: request,
             responseType: APIPushResponse.self
         )
-        let acceptedItems = (response.accepted ?? response.items).map(\.remoteEnvelope)
-        let items = response.items.map(\.remoteEnvelope)
+        let acceptedItems = (response.accepted ?? response.items ?? []).map(\.remoteEnvelope)
+        let items = (response.items ?? []).map(\.remoteEnvelope)
         let accepted: [PushTaskResult] = matchAcceptedResults(requestTasks: request.tasks, acceptedItems: acceptedItems)
         return PushChangesResponse(
             accepted: accepted,
@@ -332,9 +332,9 @@ private struct APIPullResult: Decodable {
 }
 
 private struct APIPushResponse: Decodable {
-    let mode: String
+    let mode: String?
     let accepted: [APIPushItem]?
-    let items: [APIPushItem]
+    let items: [APIPushItem]?
     let checkpoint: APICheckpoint
 
     var rejectedReminderIDs: [String] { [] }
