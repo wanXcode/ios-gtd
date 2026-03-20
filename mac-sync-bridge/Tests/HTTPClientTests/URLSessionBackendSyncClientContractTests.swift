@@ -247,6 +247,40 @@ final class URLSessionBackendSyncClientContractTests: XCTestCase {
         XCTAssertEqual(response.accepted.first?.task.sourceRecordID, "reminder-local-003")
     }
 
+    func testPushChangesMatchesAcceptedItemToCreateRequestViaTaskIDFallbackWhenSourceRefIsBackendID() async throws {
+        let session = StubURLSession(response: .http(statusCode: 200), data: pushFixtureSourceRefBackfilledToTaskID.data(using: .utf8)!)
+        let client = makeClient(session: session)
+
+        let response = try await client.pushChanges(
+            request: PushChangesRequest(
+                bridgeID: "bridge-contract",
+                cursor: "push-cursor-4",
+                tasks: [
+                    PushTaskMutation(
+                        taskID: nil,
+                        reminderID: "reminder-local-created-9",
+                        title: "Created reminder",
+                        listName: "Inbox",
+                        listIdentifier: "inbox",
+                        externalIdentifier: "ek-reminder-created-9",
+                        state: .active,
+                        fingerprint: ReminderFingerprint(value: "fp-created-9"),
+                        lastModifiedAt: Date(timeIntervalSince1970: 1_742_368_300),
+                        backendVersionToken: nil,
+                        backendChangeID: nil
+                    )
+                ],
+                limit: 20
+            )
+        )
+
+        XCTAssertEqual(response.accepted.count, 1)
+        XCTAssertEqual(response.items.count, 1)
+        XCTAssertEqual(response.accepted.first?.reminderID, "reminder-local-created-9")
+        XCTAssertEqual(response.accepted.first?.task.id, "task-backend-created-9")
+        XCTAssertEqual(response.items.first?.task.sourceRecordID, "task-backend-created-9")
+    }
+
     func testAckChangesSendsExpectedPayloadAndAcceptsCheckpointEnvelope() async throws {
         let session = StubURLSession(response: .http(statusCode: 200), data: ackFixture.data(using: .utf8)!)
         let client = makeClient(session: session)
@@ -560,6 +594,63 @@ private let pushFixturePartialAccepted = #"""
     "backend_cursor": "cursor-45",
     "last_push_cursor": "cursor-push-10",
     "last_acked_change_id": 44
+  }
+}
+"""#
+
+private let pushFixtureSourceRefBackfilledToTaskID = #"""
+{
+  "mode": "delta",
+  "accepted": [
+    {
+      "task_id": "task-backend-created-9",
+      "version": 1,
+      "change_id": 46,
+      "operation": "upsert",
+      "task": {
+        "title": "Created reminder",
+        "note": "Backend wrote task id into source_ref",
+        "due_at": "2026-03-19T12:00:00Z",
+        "remind_at": "2026-03-19T11:45:00Z",
+        "is_all_day_due": false,
+        "priority": 2,
+        "list_name": "Inbox",
+        "source_ref": "task-backend-created-9",
+        "updated_at": "2026-03-19T12:01:00Z",
+        "version": 1,
+        "change_id": 46,
+        "status": "active",
+        "bucket": "inbox"
+      }
+    }
+  ],
+  "items": [
+    {
+      "task_id": "task-backend-created-9",
+      "version": 1,
+      "change_id": 46,
+      "operation": "upsert",
+      "task": {
+        "title": "Created reminder",
+        "note": "Backend wrote task id into source_ref",
+        "due_at": "2026-03-19T12:00:00Z",
+        "remind_at": "2026-03-19T11:45:00Z",
+        "is_all_day_due": false,
+        "priority": 2,
+        "list_name": "Inbox",
+        "source_ref": "task-backend-created-9",
+        "updated_at": "2026-03-19T12:01:00Z",
+        "version": 1,
+        "change_id": 46,
+        "status": "active",
+        "bucket": "inbox"
+      }
+    }
+  ],
+  "checkpoint": {
+    "backend_cursor": "cursor-46",
+    "last_push_cursor": "cursor-push-11",
+    "last_acked_change_id": 45
   }
 }
 """#

@@ -416,6 +416,9 @@ private func matchAcceptedPushResults(
                 return match
             }
         }
+        if let match = consumeMatch(item.taskID, from: &unmatchedByExternalIdentifier) {
+            return match
+        }
         return nil
     }
 

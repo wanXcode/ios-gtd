@@ -147,7 +147,14 @@ public actor SyncCoordinator {
     ) -> SyncPlan {
         let mappingByReminderID = Dictionary(uniqueKeysWithValues: mappings.map { ($0.reminderID, $0) })
         let mappingByTaskID = Dictionary(uniqueKeysWithValues: mappings.map { ($0.taskID, $0) })
+        let mappingByExternalIdentifier = Dictionary(uniqueKeysWithValues: mappings.compactMap { mapping in
+            mapping.reminderExternalIdentifier.map { ($0, mapping) }
+        })
+        let mappingBySourceRecordHint = Dictionary(uniqueKeysWithValues: mappings.compactMap { mapping in
+            mapping.lastSourceRecordIDHint.map { ($0, mapping) }
+        })
         let reminderByID = Dictionary(uniqueKeysWithValues: reminders.map { ($0.id, $0) })
+        let reminderByExternalIdentifier = Dictionary(uniqueKeysWithValues: reminders.map { ($0.externalIdentifier, $0) })
 
         var plan = SyncPlan()
 
@@ -156,7 +163,10 @@ public actor SyncCoordinator {
                 context: PullPlanningContext(
                     backendChanges: backendChanges,
                     reminderByID: reminderByID,
-                    mappingByTaskID: mappingByTaskID
+                    reminderByExternalIdentifier: reminderByExternalIdentifier,
+                    mappingByTaskID: mappingByTaskID,
+                    mappingByExternalIdentifier: mappingByExternalIdentifier,
+                    mappingBySourceRecordHint: mappingBySourceRecordHint
                 ),
                 conflictResolver: dependencies.conflictResolver
             )
@@ -221,6 +231,7 @@ public actor SyncCoordinator {
                 reminderListIdentifier: reminder.listIdentifier,
                 reminderFingerprint: reminder.fingerprint,
                 backendVersionToken: result.task.versionToken,
+                lastSourceRecordIDHint: result.task.sourceRecordID,
                 syncState: result.task.state,
                 syncedAt: now
             )
@@ -236,23 +247,39 @@ public actor SyncCoordinator {
     ) async throws -> [ReminderRecord] {
         guard !items.isEmpty else { return existingReminders }
 
+        let mappings = try await dependencies.bridgeStore.loadMappings()
+        let mappingByTaskID = Dictionary(uniqueKeysWithValues: mappings.map { ($0.taskID, $0) })
+        let mappingByExternalIdentifier = Dictionary(uniqueKeysWithValues: mappings.compactMap { mapping in
+            mapping.reminderExternalIdentifier.map { ($0, mapping) }
+        })
+        let mappingBySourceRecordHint = Dictionary(uniqueKeysWithValues: mappings.compactMap { mapping in
+            mapping.lastSourceRecordIDHint.map { ($0, mapping) }
+        })
         let reminderByExternalIdentifier = Dictionary(uniqueKeysWithValues: existingReminders.map { ($0.externalIdentifier, $0) })
         let reminderByReminderID = Dictionary(uniqueKeysWithValues: existingReminders.map { ($0.id, $0) })
 
         let upserts: [ReminderRecord] = items.compactMap { item in
-            let sourceReminderKey = item.task.sourceRecordID ?? item.taskID
-            let existingReminder = reminderByExternalIdentifier[sourceReminderKey] ?? reminderByReminderID[sourceReminderKey]
-            let reminderID = existingReminder?.id ?? sourceReminderKey
-            let externalIdentifier = existingReminder?.externalIdentifier ?? sourceReminderKey
+            let sourceRecordID = item.task.sourceRecordID
+            let mappedReminder = mappingByTaskID[item.taskID]
+                .flatMap { reminderByReminderID[$0.reminderID] }
+                ?? sourceRecordID.flatMap { mappingByExternalIdentifier[$0] }?.flatMap { reminderByReminderID[$0.reminderID] }
+                ?? sourceRecordID.flatMap { mappingBySourceRecordHint[$0] }?.flatMap { reminderByReminderID[$0.reminderID] }
+                ?? sourceRecordID.flatMap { reminderByExternalIdentifier[$0] }
+                ?? sourceRecordID.flatMap { reminderByReminderID[$0] }
+
+            guard let existingReminder = mappedReminder else {
+                return nil
+            }
+
             return ReminderRecord(
-                id: reminderID,
-                externalIdentifier: externalIdentifier,
+                id: existingReminder.id,
+                externalIdentifier: existingReminder.externalIdentifier,
                 title: item.task.title,
                 notes: item.task.notes,
                 dueDate: item.task.dueDate,
                 isCompleted: item.task.state == .completed,
                 isDeleted: item.task.state == .deleted,
-                listIdentifier: item.task.sourceListID ?? existingReminder?.listIdentifier,
+                listIdentifier: item.task.sourceListID ?? existingReminder.listIdentifier,
                 lastModifiedAt: item.task.updatedAt,
                 fingerprint: ReminderFingerprint(value: item.task.versionToken)
             )

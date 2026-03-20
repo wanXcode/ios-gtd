@@ -142,6 +142,7 @@ public struct ReminderTaskMapping: Codable, Hashable, Sendable {
     public var reminderListIdentifier: String?
     public var reminderFingerprint: ReminderFingerprint
     public var backendVersionToken: String
+    public var lastSourceRecordIDHint: String?
     public var syncState: SyncEntityState
     public var syncedAt: Date
 
@@ -152,6 +153,7 @@ public struct ReminderTaskMapping: Codable, Hashable, Sendable {
         reminderListIdentifier: String? = nil,
         reminderFingerprint: ReminderFingerprint,
         backendVersionToken: String,
+        lastSourceRecordIDHint: String? = nil,
         syncState: SyncEntityState = .active,
         syncedAt: Date
     ) {
@@ -161,6 +163,7 @@ public struct ReminderTaskMapping: Codable, Hashable, Sendable {
         self.reminderListIdentifier = reminderListIdentifier
         self.reminderFingerprint = reminderFingerprint
         self.backendVersionToken = backendVersionToken
+        self.lastSourceRecordIDHint = lastSourceRecordIDHint
         self.syncState = syncState
         self.syncedAt = syncedAt
     }
@@ -543,16 +546,25 @@ public struct RemoteTaskEnvelope: Codable, Hashable, Sendable {
 public struct PullPlanningContext: Sendable {
     public var backendChanges: [BackendTaskRecord]
     public var reminderByID: [String: ReminderRecord]
+    public var reminderByExternalIdentifier: [String: ReminderRecord]
     public var mappingByTaskID: [String: ReminderTaskMapping]
+    public var mappingByExternalIdentifier: [String: ReminderTaskMapping]
+    public var mappingBySourceRecordHint: [String: ReminderTaskMapping]
 
     public init(
         backendChanges: [BackendTaskRecord],
         reminderByID: [String: ReminderRecord],
-        mappingByTaskID: [String: ReminderTaskMapping]
+        reminderByExternalIdentifier: [String: ReminderRecord],
+        mappingByTaskID: [String: ReminderTaskMapping],
+        mappingByExternalIdentifier: [String: ReminderTaskMapping],
+        mappingBySourceRecordHint: [String: ReminderTaskMapping]
     ) {
         self.backendChanges = backendChanges
         self.reminderByID = reminderByID
+        self.reminderByExternalIdentifier = reminderByExternalIdentifier
         self.mappingByTaskID = mappingByTaskID
+        self.mappingByExternalIdentifier = mappingByExternalIdentifier
+        self.mappingBySourceRecordHint = mappingBySourceRecordHint
     }
 }
 

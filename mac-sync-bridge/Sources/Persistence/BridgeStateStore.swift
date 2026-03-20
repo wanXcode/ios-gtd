@@ -27,7 +27,7 @@ public struct SQLiteSchemaDefinition: Sendable {
     public let currentVersion: Int
     public let createStatements: [String]
 
-    public init(currentVersion: Int = 1, createStatements: [String] = SQLiteSchemaDefinition.defaultStatements) {
+    public init(currentVersion: Int = 2, createStatements: [String] = SQLiteSchemaDefinition.defaultStatements) {
         self.currentVersion = currentVersion
         self.createStatements = createStatements
     }
@@ -71,6 +71,7 @@ public struct SQLiteSchemaDefinition: Sendable {
             reminder_list_identifier TEXT,
             reminder_fingerprint TEXT NOT NULL,
             backend_version_token TEXT NOT NULL,
+            last_source_record_id_hint TEXT,
             sync_state TEXT NOT NULL,
             synced_at TEXT NOT NULL
         );
@@ -348,6 +349,7 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
                    reminder_list_identifier,
                    reminder_fingerprint,
                    backend_version_token,
+                   last_source_record_id_hint,
                    sync_state,
                    synced_at
             FROM reminder_task_mappings
@@ -362,9 +364,9 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
                       let taskID = statement.text(at: 1), !taskID.isEmpty,
                       let fingerprint = statement.text(at: 4), !fingerprint.isEmpty,
                       let versionToken = statement.text(at: 5), !versionToken.isEmpty,
-                      let syncStateText = statement.text(at: 6),
+                      let syncStateText = statement.text(at: 7),
                       let syncState = SyncEntityState(rawValue: syncStateText),
-                      let syncedAtText = statement.text(at: 7) else {
+                      let syncedAtText = statement.text(at: 8) else {
                     throw SQLiteBridgeStateStoreError.invalidMapping("missing required mapping columns")
                 }
 
@@ -377,6 +379,7 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
                         reminderListIdentifier: statement.optionalText(at: 3),
                         reminderFingerprint: ReminderFingerprint(value: fingerprint),
                         backendVersionToken: versionToken,
+                        lastSourceRecordIDHint: statement.optionalText(at: 6),
                         syncState: syncState,
                         syncedAt: syncedAt
                     )
@@ -400,15 +403,17 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
                 reminder_list_identifier,
                 reminder_fingerprint,
                 backend_version_token,
+                last_source_record_id_hint,
                 sync_state,
                 synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(reminder_id) DO UPDATE SET
                 task_id = excluded.task_id,
                 reminder_external_identifier = excluded.reminder_external_identifier,
                 reminder_list_identifier = excluded.reminder_list_identifier,
                 reminder_fingerprint = excluded.reminder_fingerprint,
                 backend_version_token = excluded.backend_version_token,
+                last_source_record_id_hint = excluded.last_source_record_id_hint,
                 sync_state = excluded.sync_state,
                 synced_at = excluded.synced_at;
             """
@@ -424,8 +429,9 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
                 statement.bind(optionalText: mapping.reminderListIdentifier, at: 4)
                 statement.bind(text: mapping.reminderFingerprint.value, at: 5)
                 statement.bind(text: mapping.backendVersionToken, at: 6)
-                statement.bind(text: mapping.syncState.rawValue, at: 7)
-                statement.bind(text: Self.iso8601String(from: mapping.syncedAt) ?? "", at: 8)
+                statement.bind(optionalText: mapping.lastSourceRecordIDHint, at: 7)
+                statement.bind(text: mapping.syncState.rawValue, at: 8)
+                statement.bind(text: Self.iso8601String(from: mapping.syncedAt) ?? "", at: 9)
                 try statement.runToCompletion()
             }
 
@@ -524,6 +530,18 @@ public actor SQLiteBridgeStateStore: @preconcurrency BridgeStateStore {
             try database.execute(sql: "PRAGMA foreign_keys=ON;")
             for statement in schemaDefinition.createStatements {
                 try database.execute(sql: statement)
+            }
+            do {
+                try database.execute(sql: "ALTER TABLE reminder_task_mappings ADD COLUMN last_source_record_id_hint TEXT;")
+            } catch let error as SQLiteBridgeStateStoreError {
+                if case let .executeFailed(sql, code, message) = error,
+                   sql.contains("ALTER TABLE reminder_task_mappings ADD COLUMN last_source_record_id_hint TEXT"),
+                   code == 1,
+                   message.localizedCaseInsensitiveContains("duplicate column name") {
+                    // already migrated
+                } else {
+                    throw error
+                }
             }
 
             let checkSQL = "SELECT COUNT(*) FROM schema_migrations WHERE version = ?;"

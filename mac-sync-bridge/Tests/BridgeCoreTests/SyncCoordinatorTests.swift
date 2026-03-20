@@ -61,7 +61,7 @@ struct SyncCoordinatorTests {
     }
 
     @Test
-    func backendChangePullsIntoLocalReminder() async throws {
+    func backendChangePullsIntoLocalReminderUsingPersistedExternalIdentifierSnapshot() async throws {
         let now = Date()
         let remoteTask = BackendTaskRecord(
             id: "t1",
@@ -71,14 +71,17 @@ struct SyncCoordinatorTests {
             state: .active,
             updatedAt: now,
             versionToken: "v2",
-            sourceRecordID: "ek-r1",
+            sourceRecordID: "legacy-r1",
             sourceListID: "inbox"
         )
         let mapping = ReminderTaskMapping(
             reminderID: "r1",
             taskID: "t1",
+            reminderExternalIdentifier: "ek-r1",
+            reminderListIdentifier: "inbox",
             reminderFingerprint: ReminderFingerprint(value: "v1"),
             backendVersionToken: "v1",
+            lastSourceRecordIDHint: "legacy-r1",
             syncedAt: now.addingTimeInterval(-3600)
         )
         let localReminder = ReminderRecord(
@@ -209,7 +212,7 @@ struct SyncCoordinatorTests {
     }
 
     @Test
-    func remotePushItemsReuseExistingReminderBySourceRecordIdentifier() async throws {
+    func remotePushItemsReuseExistingReminderByPersistedMappingExternalIdentifierBeforeSourceRecordHint() async throws {
         let now = Date()
         let existingReminder = ReminderRecord(
             id: "ek-local-1",
@@ -233,9 +236,20 @@ struct SyncCoordinatorTests {
             updatedAt: now,
             versionToken: "v2",
             changeID: 7,
-            sourceRecordID: "ek-local-1",
+            sourceRecordID: "legacy-source-record-id",
             sourceListID: "inbox",
             sourceCalendarID: "inbox"
+        )
+
+        let persistedMapping = ReminderTaskMapping(
+            reminderID: "ek-local-1",
+            taskID: "task-1",
+            reminderExternalIdentifier: "ek-local-1",
+            reminderListIdentifier: "inbox",
+            reminderFingerprint: ReminderFingerprint(value: "fp-old"),
+            backendVersionToken: "v1",
+            lastSourceRecordIDHint: "legacy-source-record-id",
+            syncedAt: now.addingTimeInterval(-120)
         )
 
         let reminderStore = InMemoryReminderStore(reminders: [existingReminder])
@@ -243,7 +257,8 @@ struct SyncCoordinatorTests {
             RemoteTaskEnvelope(taskID: "task-1", version: 2, changeID: 7, operation: "upsert", task: remoteTask)
         ])
         let bridgeStore = InMemoryBridgeStateStore(
-            configuration: BridgeConfiguration(backendBaseURL: URL(string: "http://127.0.0.1:8000")!)
+            configuration: BridgeConfiguration(backendBaseURL: URL(string: "http://127.0.0.1:8000")!),
+            mappings: [persistedMapping]
         )
         let coordinator = SyncCoordinator(
             dependencies: SyncCoordinatorDependencies(
@@ -269,6 +284,7 @@ struct SyncCoordinatorTests {
         #expect(mappings.count == 1)
         #expect(mappings.first?.reminderID == "ek-local-1")
         #expect(mappings.first?.reminderExternalIdentifier == "ek-local-1")
+        #expect(mappings.first?.lastSourceRecordIDHint == "legacy-source-record-id")
     }
 
     @Test

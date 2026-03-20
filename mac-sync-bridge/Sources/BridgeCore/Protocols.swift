@@ -164,7 +164,14 @@ public struct DefaultPullPlanner: PullPlanning {
         var plan = SyncPlan()
 
         for task in context.backendChanges {
-            if let mapping = context.mappingByTaskID[task.id], let reminder = context.reminderByID[mapping.reminderID] {
+            let matchedMapping = context.mappingByTaskID[task.id]
+                ?? task.sourceRecordID.flatMap { context.mappingByExternalIdentifier[$0] }
+                ?? task.sourceRecordID.flatMap { context.mappingBySourceRecordHint[$0] }
+            let matchedReminder = matchedMapping.flatMap { context.reminderByID[$0.reminderID] }
+                ?? task.sourceRecordID.flatMap { context.reminderByExternalIdentifier[$0] }
+                ?? task.sourceRecordID.flatMap { context.reminderByID[$0] }
+
+            if let mapping = matchedMapping, let reminder = matchedReminder {
                 let reminderChanged = reminder.fingerprint != mapping.reminderFingerprint
                 let backendChanged = task.versionToken != mapping.backendVersionToken
 
@@ -196,11 +203,13 @@ public struct DefaultPullPlanner: PullPlanning {
                     }
                     plan.ackTaskIDs.append(task.id)
                 }
-            } else if let newReminder = reminderRecord(from: task, existingReminderID: UUID().uuidString, externalIdentifier: task.sourceRecordID ?? UUID().uuidString) {
+            } else if let reminder = matchedReminder,
+                      let resolved = reminderRecord(from: task, existingReminderID: reminder.id, externalIdentifier: reminder.externalIdentifier) {
                 if task.state == .deleted {
-                    continue
+                    plan.localDeletes.append(resolved)
+                } else {
+                    plan.localUpserts.append(resolved)
                 }
-                plan.localUpserts.append(newReminder)
                 plan.ackTaskIDs.append(task.id)
             }
         }
