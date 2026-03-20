@@ -695,17 +695,6 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
         ack_change_id = item.change_id or mapping.last_push_change_id or mapping.last_acked_change_id or task.sync_change_id
         if ack_change_id > task.sync_change_id:
             raise HTTPException(status_code=409, detail=f"Ack change_id ahead of task change_id for task: {item.task_id}")
-        if mapping.last_acked_change_id and ack_change_id <= mapping.last_acked_change_id:
-            acked.append(
-                {
-                    "task_id": str(item.task_id),
-                    "remote_id": mapping.apple_reminder_id,
-                    "version": item.version,
-                    "change_id": ack_change_id,
-                    "status": "stale_ignored",
-                }
-            )
-            continue
         if mapping.last_synced_task_version and item.version < mapping.last_synced_task_version:
             acked.append(
                 {
@@ -725,6 +714,28 @@ def apple_ack(payload: SyncAppleAckRequest, db: Session = Depends(get_db)) -> di
                 SyncDelivery.change_id == ack_change_id,
             )
         )
+        if delivery is None and mapping.last_acked_change_id and ack_change_id < mapping.last_acked_change_id:
+            acked.append(
+                {
+                    "task_id": str(item.task_id),
+                    "remote_id": mapping.apple_reminder_id,
+                    "version": item.version,
+                    "change_id": ack_change_id,
+                    "status": "stale_ignored",
+                }
+            )
+            continue
+        if delivery is not None and (delivery.status == "acknowledged" or delivery.acked_at is not None):
+            acked.append(
+                {
+                    "task_id": str(item.task_id),
+                    "remote_id": mapping.apple_reminder_id,
+                    "version": item.version,
+                    "change_id": ack_change_id,
+                    "status": "stale_ignored",
+                }
+            )
+            continue
         if delivery is None and item.change_id is not None and mapping.last_acked_change_id == ack_change_id:
             acked.append(
                 {

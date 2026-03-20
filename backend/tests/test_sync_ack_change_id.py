@@ -165,6 +165,77 @@ def test_pending_delivery_is_replayed_even_when_cursor_has_already_passed_change
 
 
 
+def test_same_change_id_across_different_tasks_still_acknowledges_each_delivery(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, TestingSessionLocal = test_context
+    first = client.post("/api/tasks", json={"title": "Task one", "last_modified_by": "tester"}).json()
+    second = client.post("/api/tasks", json={"title": "Task two", "last_modified_by": "tester"}).json()
+
+    push = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-same-change", "cursor": "0", "limit": 10, "tasks": []},
+    )
+    assert push.status_code == 200, push.text
+    items = [
+        entry
+        for entry in push.json()["items"]
+        if entry["task_id"] in {first["id"], second["id"]}
+    ]
+    assert len(items) == 2
+    assert {entry["change_id"] for entry in items} == {1}
+
+    ack = client.post(
+        "/api/sync/apple/ack",
+        json={
+            "bridge_id": "bridge-same-change",
+            "acks": [
+                {
+                    "task_id": entry["task_id"],
+                    "remote_id": f"apple-{entry['task_id']}",
+                    "version": entry["version"],
+                    "change_id": entry["change_id"],
+                    "status": "success",
+                }
+                for entry in items
+            ],
+        },
+    )
+    assert ack.status_code == 200, ack.text
+    payload = ack.json()
+    assert payload["success"] == 2
+    assert all(entry["status"] == "success" for entry in payload["acked"])
+
+    replay = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-same-change", "cursor": "1", "limit": 10, "tasks": []},
+    )
+    assert replay.status_code == 200, replay.text
+    replay_task_ids = {entry["task_id"] for entry in replay.json()["items"]}
+    assert first["id"] not in replay_task_ids
+    assert second["id"] not in replay_task_ids
+
+    with TestingSessionLocal() as db:
+        for created in (first, second):
+            task = db.scalar(select(Task).where(Task.id == UUID(created["id"])))
+            mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == UUID(created["id"])))
+            delivery = db.scalar(
+                select(SyncDelivery).where(
+                    SyncDelivery.bridge_id == "bridge-same-change",
+                    SyncDelivery.task_id == created["id"],
+                    SyncDelivery.change_id == 1,
+                )
+            )
+            assert task.sync_pending is False
+            assert mapping is not None
+            assert mapping.last_acked_change_id == 1
+            assert mapping.last_delivery_status == "acknowledged"
+            assert delivery is not None
+            assert delivery.status == "acknowledged"
+            assert delivery.acked_at is not None
+
+
+
 def test_applied_ack_marks_delivery_acknowledged_and_stops_replay(
     test_context: tuple[TestClient, sessionmaker],
 ) -> None:
