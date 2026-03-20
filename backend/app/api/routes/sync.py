@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_, select
@@ -143,13 +144,21 @@ def _get_or_create_delivery(
     return delivery
 
 
+def _pending_delivery_statuses() -> tuple[str, ...]:
+    return ("pending", "retryable_failed", "failed", "conflict")
+
+
+def _replayable_delivery_statuses() -> tuple[str, ...]:
+    return ("retryable_failed", "failed", "conflict")
+
+
 def _serialize_bridge_state(state: SyncBridgeState, db: Session) -> SyncBridgeStateRead:
     pending_delivery_count = db.scalar(
         select(func.count())
         .select_from(SyncDelivery)
         .where(
             SyncDelivery.bridge_id == state.bridge_id,
-            SyncDelivery.status.in_(["pending", "retryable_failed", "failed", "conflict"]),
+            SyncDelivery.status.in_(_pending_delivery_statuses()),
         )
     )
     deliveries = list(
@@ -473,6 +482,18 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
         )
         created += 1
 
+    replay_deliveries = list(
+        db.scalars(
+            select(SyncDelivery)
+            .where(
+                SyncDelivery.bridge_id == payload.bridge_id,
+                SyncDelivery.status.in_(_replayable_delivery_statuses()),
+            )
+            .order_by(SyncDelivery.last_pushed_at.asc(), SyncDelivery.created_at.asc())
+            .limit(payload.limit)
+        ).all()
+    )
+
     stmt = (
         select(Task, AppleReminderMapping)
         .outerjoin(AppleReminderMapping, AppleReminderMapping.task_id == Task.id)
@@ -483,39 +504,79 @@ def apple_push(payload: SyncApplePushRequest, db: Session = Depends(get_db)) -> 
     rows = list(db.execute(stmt).all())
 
     items = []
+    replayed_keys: set[tuple[str, int]] = set()
     next_cursor = payload.cursor
     returned = 0
     max_seen_change_id = state.last_seen_change_id or 0
-    for task, mapping in rows:
-        if payload.cursor is not None and str(task.sync_change_id) <= payload.cursor:
+
+    for delivery in replay_deliveries:
+        task = db.scalar(select(Task).where(Task.id == UUID(delivery.task_id)))
+        if not task:
             continue
+        mapping = db.scalar(select(AppleReminderMapping).where(AppleReminderMapping.task_id == task.id))
         requested_version = requested_versions.get(task.id)
         if requested_version is not None and requested_version >= task.version:
             continue
-        if mapping and mapping.last_ack_status in {"success", "acked"} and mapping.last_acked_change_id == task.sync_change_id:
-            continue
         items.append(_serialize_push_item(task, mapping))
+        replayed_keys.add((str(task.id), delivery.change_id))
         returned += 1
-        next_cursor = str(task.sync_change_id)
-        max_seen_change_id = max(max_seen_change_id, task.sync_change_id)
+        max_seen_change_id = max(max_seen_change_id, delivery.change_id)
         task.sync_last_pushed_at = _now()
-        previous_delivery_status = mapping.last_delivery_status if mapping else None
-        delivery = _get_or_create_delivery(
-            db,
-            bridge_id=payload.bridge_id,
-            task_id=str(task.id),
-            change_id=task.sync_change_id,
-            version=task.version,
-            operation=_mapping_operation(mapping, task),
-            remote_id=mapping.apple_reminder_id if mapping else None,
-        )
+        delivery.attempt_count += 1
+        delivery.last_pushed_at = _now()
+        delivery.status = "pending"
+        delivery.failed_at = None
+        delivery.acked_at = None
+        delivery.task_version = task.version
+        delivery.operation = _mapping_operation(mapping, task)
         if mapping:
+            previous_delivery_status = mapping.last_delivery_status
+            delivery.remote_id = mapping.apple_reminder_id or delivery.remote_id
             mapping.pending_operation = _mapping_operation(mapping, task)
-            mapping.last_push_change_id = task.sync_change_id
-            mapping.last_delivery_status = previous_delivery_status if previous_delivery_status in {"retryable_failed", "failed", "conflict"} else delivery.status
+            mapping.last_push_change_id = delivery.change_id
+            mapping.last_delivery_status = previous_delivery_status if previous_delivery_status in {"retryable_failed", "failed", "conflict"} else "pending"
             mapping.last_delivery_attempt_count = delivery.attempt_count
             db.add(mapping)
+        db.add(delivery)
         db.add(task)
+        if returned >= payload.limit:
+            break
+
+    if returned < payload.limit:
+        for task, mapping in rows:
+            if (str(task.id), task.sync_change_id) in replayed_keys:
+                continue
+            if payload.cursor is not None and str(task.sync_change_id) <= payload.cursor:
+                continue
+            requested_version = requested_versions.get(task.id)
+            if requested_version is not None and requested_version >= task.version:
+                continue
+            if mapping and mapping.last_ack_status in {"success", "acked"} and mapping.last_acked_change_id == task.sync_change_id:
+                continue
+            items.append(_serialize_push_item(task, mapping))
+            returned += 1
+            next_cursor = str(task.sync_change_id)
+            max_seen_change_id = max(max_seen_change_id, task.sync_change_id)
+            task.sync_last_pushed_at = _now()
+            previous_delivery_status = mapping.last_delivery_status if mapping else None
+            delivery = _get_or_create_delivery(
+                db,
+                bridge_id=payload.bridge_id,
+                task_id=str(task.id),
+                change_id=task.sync_change_id,
+                version=task.version,
+                operation=_mapping_operation(mapping, task),
+                remote_id=mapping.apple_reminder_id if mapping else None,
+            )
+            if mapping:
+                mapping.pending_operation = _mapping_operation(mapping, task)
+                mapping.last_push_change_id = task.sync_change_id
+                mapping.last_delivery_status = previous_delivery_status if previous_delivery_status in {"retryable_failed", "failed", "conflict"} else delivery.status
+                mapping.last_delivery_attempt_count = delivery.attempt_count
+                db.add(mapping)
+            db.add(task)
+            if returned >= payload.limit:
+                break
 
     run = SyncRun(
         bridge_id=payload.bridge_id,

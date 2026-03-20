@@ -122,6 +122,57 @@ def test_retryable_failed_ack_keeps_delivery_ledger_and_requeues_task(
 
 
 
+def test_pending_delivery_is_replayed_even_when_cursor_has_already_passed_change_id(
+    test_context: tuple[TestClient, sessionmaker],
+) -> None:
+    client, _ = test_context
+    created = client.post("/api/tasks", json={"title": "Replay pending", "last_modified_by": "tester"}).json()
+
+    push = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-replay", "cursor": "0", "limit": 10, "tasks": []},
+    )
+    assert push.status_code == 200
+    item = next(entry for entry in push.json()["items"] if entry["task_id"] == created["id"])
+
+    failed_ack = client.post(
+        "/api/sync/apple/ack",
+        json={
+            "bridge_id": "bridge-replay",
+            "acks": [
+                {
+                    "task_id": created["id"],
+                    "remote_id": "apple-replay-1",
+                    "version": item["version"],
+                    "change_id": item["change_id"],
+                    "status": "failed",
+                    "retryable": True,
+                    "error_code": "timeout",
+                    "error_message": "bridge timeout",
+                }
+            ],
+        },
+    )
+    assert failed_ack.status_code == 200
+
+    replay = client.post(
+        "/api/sync/apple/push",
+        json={"bridge_id": "bridge-replay", "cursor": str(item["change_id"]), "limit": 10, "tasks": []},
+    )
+    assert replay.status_code == 200, replay.text
+    replay_payload = replay.json()
+    assert replay_payload["checkpoint"]["pending_delivery_count"] >= 1
+    assert replay_payload["checkpoint"]["recent_deliveries"][0]["status"] == "pending"
+    assert replay_payload["items"]
+    replay_item = replay_payload["items"][0]
+    assert replay_item["task_id"] == created["id"]
+    assert replay_item["change_id"] == item["change_id"]
+    assert replay_payload["cursor"] == str(item["change_id"])
+    assert replay_payload["next_cursor"] == str(item["change_id"])
+    assert replay_payload["checkpoint"]["pending_delivery_count"] >= 1
+
+
+
 def test_stale_ack_by_change_id_is_ignored_after_success(
     test_context: tuple[TestClient, sessionmaker],
 ) -> None:
