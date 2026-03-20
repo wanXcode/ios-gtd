@@ -209,6 +209,69 @@ struct SyncCoordinatorTests {
     }
 
     @Test
+    func remotePushItemsReuseExistingReminderBySourceRecordIdentifier() async throws {
+        let now = Date()
+        let existingReminder = ReminderRecord(
+            id: "ek-local-1",
+            externalIdentifier: "ek-local-1",
+            title: "Write email",
+            notes: nil,
+            dueDate: nil,
+            isCompleted: false,
+            isDeleted: false,
+            listIdentifier: "inbox",
+            lastModifiedAt: now.addingTimeInterval(-60),
+            fingerprint: ReminderFingerprint(value: "fp-old")
+        )
+
+        let remoteTask = BackendTaskRecord(
+            id: "task-1",
+            title: "Write email",
+            notes: "from backend",
+            dueDate: nil,
+            state: .active,
+            updatedAt: now,
+            versionToken: "v2",
+            changeID: 7,
+            sourceRecordID: "ek-local-1",
+            sourceListID: "inbox",
+            sourceCalendarID: "inbox"
+        )
+
+        let reminderStore = InMemoryReminderStore(reminders: [existingReminder])
+        let backendClient = StaticPushBackendSyncClient(items: [
+            RemoteTaskEnvelope(taskID: "task-1", version: 2, changeID: 7, operation: "upsert", task: remoteTask)
+        ])
+        let bridgeStore = InMemoryBridgeStateStore(
+            configuration: BridgeConfiguration(backendBaseURL: URL(string: "http://127.0.0.1:8000")!)
+        )
+        let coordinator = SyncCoordinator(
+            dependencies: SyncCoordinatorDependencies(
+                reminderStore: reminderStore,
+                backendClient: backendClient,
+                bridgeStore: bridgeStore,
+                conflictResolver: LastWriteWinsConflictResolver(),
+                retryScheduler: ExponentialBackoffRetryScheduler(),
+                bridgeID: "test-bridge"
+            )
+        )
+
+        let snapshot = try await coordinator.runSyncWithDebug(direction: .push)
+        let reminders = try await reminderStore.fetchReminders()
+        let mappings = try await bridgeStore.loadMappings()
+
+        #expect(snapshot.pushResponseItemsCount == 1)
+        #expect(snapshot.ackItemsCount == 1)
+        #expect(reminders.count == 1)
+        #expect(reminders.first?.id == "ek-local-1")
+        #expect(reminders.first?.externalIdentifier == "ek-local-1")
+        #expect(reminders.first?.notes == "from backend")
+        #expect(mappings.count == 1)
+        #expect(mappings.first?.reminderID == "ek-local-1")
+        #expect(mappings.first?.reminderExternalIdentifier == "ek-local-1")
+    }
+
+    @Test
     func pendingOperationsAreConsumedBeforeMainSync() async throws {
         let now = Date()
         let mutation = PushTaskMutation(

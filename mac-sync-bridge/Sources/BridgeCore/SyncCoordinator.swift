@@ -236,15 +236,14 @@ public actor SyncCoordinator {
     ) async throws -> [ReminderRecord] {
         guard !items.isEmpty else { return existingReminders }
 
-        let reminderPairs: [(String, ReminderRecord)] = existingReminders.map { reminder in
-            (reminder.externalIdentifier, reminder)
-        }
-        let reminderByTaskID: [String: ReminderRecord] = Dictionary(uniqueKeysWithValues: reminderPairs)
+        let reminderByExternalIdentifier = Dictionary(uniqueKeysWithValues: existingReminders.map { ($0.externalIdentifier, $0) })
+        let reminderByReminderID = Dictionary(uniqueKeysWithValues: existingReminders.map { ($0.id, $0) })
 
         let upserts: [ReminderRecord] = items.compactMap { item in
-            let existingReminder = reminderByTaskID[item.taskID]
-            let reminderID = existingReminder?.id ?? UUID().uuidString
-            let externalIdentifier = existingReminder?.externalIdentifier ?? item.taskID
+            let sourceReminderKey = item.task.sourceRecordID ?? item.taskID
+            let existingReminder = reminderByExternalIdentifier[sourceReminderKey] ?? reminderByReminderID[sourceReminderKey]
+            let reminderID = existingReminder?.id ?? sourceReminderKey
+            let externalIdentifier = existingReminder?.externalIdentifier ?? sourceReminderKey
             return ReminderRecord(
                 id: reminderID,
                 externalIdentifier: externalIdentifier,
@@ -253,7 +252,7 @@ public actor SyncCoordinator {
                 dueDate: item.task.dueDate,
                 isCompleted: item.task.state == .completed,
                 isDeleted: item.task.state == .deleted,
-                listIdentifier: existingReminder?.listIdentifier,
+                listIdentifier: item.task.sourceListID ?? existingReminder?.listIdentifier,
                 lastModifiedAt: item.task.updatedAt,
                 fingerprint: ReminderFingerprint(value: item.task.versionToken)
             )
